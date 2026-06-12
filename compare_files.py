@@ -54,12 +54,20 @@ def read_csv_rows(path: Path) -> list[list[str]]:
         return [[str(cell).strip() for cell in row] for row in csv.reader(handle)]
 
 
+def _normalize_cell(cell: object) -> str:
+    if cell is None:
+        return ""
+    if isinstance(cell, float) and cell.is_integer():
+        return str(int(cell))
+    return str(cell).strip()
+
+
 def read_xlsx_rows(path: Path) -> list[list[str]]:
     workbook = load_workbook(path, read_only=True, data_only=True)
     sheet = workbook.active
     rows = []
     for row in sheet.iter_rows(values_only=True):
-        rows.append(["" if cell is None else str(cell).strip() for cell in row])
+        rows.append([_normalize_cell(cell) for cell in row])
     workbook.close()
     return rows
 
