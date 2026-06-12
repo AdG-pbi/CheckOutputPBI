@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from compare_files import auto_compare, parse_key_spec, write_excel_report
 
@@ -70,6 +70,30 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(result.mode, "text")
             self.assertEqual(result.summary["changed"], 2)
             self.assertEqual(result.differences[0]["status"], "CHANGED")
+
+    def test_integer_float_equivalence_in_xlsx(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.xlsx"
+            right = tmp_path / "right.xlsx"
+
+            wb1 = Workbook()
+            ws1 = wb1.active
+            ws1.append(["id", "value"])
+            ws1.append([1, 0])
+            wb1.save(left)
+
+            wb2 = Workbook()
+            ws2 = wb2.active
+            ws2.append(["id", "value"])
+            ws2.append([1, 0.0])
+            wb2.save(right)
+
+            result = auto_compare(left, right, "1")
+
+            self.assertEqual(result.summary["changed"], 0)
+            self.assertEqual(result.summary["added"], 0)
+            self.assertEqual(result.summary["removed"], 0)
 
 
 if __name__ == "__main__":
