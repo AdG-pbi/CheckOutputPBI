@@ -153,6 +153,8 @@ def rows_to_mapping(rows: list[list[str]], key_indexes: tuple[int, ...] | None, 
     for offset, raw_row in enumerate(rows, start=1):
         row = pad_row(raw_row, width)
         record_key = build_record_key(row, offset, key_indexes)
+        if key_indexes is not None and not record_key.replace("|", "").strip():
+            continue
         if record_key in mapping:
             raise ComparisonError(f"Chiave duplicata trovata nel file: {record_key}")
         mapping[record_key] = row
