@@ -13,6 +13,7 @@ from openpyxl.styles import PatternFill
 from pypdf import PdfReader
 
 TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+MAX_EXCEL_ROWS = 1_048_576
 STATUS_FILLS = {
     "ADDED": PatternFill(fill_type="solid", fgColor="C6EFCE"),
     "REMOVED": PatternFill(fill_type="solid", fgColor="FFC7CE"),
@@ -298,7 +299,56 @@ def auto_compare(file1: Path, file2: Path, key_spec: str | None = None) -> Compa
     return compare_text_files(file1, file2)
 
 
-def write_excel_report(result: ComparisonResult, output_path: Path) -> None:
+def build_details_table(result: ComparisonResult) -> tuple[list[str], list[list[str | int]]]:
+    if result.mode == "tabular":
+        headers = ["Status", "Record Key", "Column", "File 1", "File 2"]
+        rows = [
+            [
+                difference["status"],
+                difference["record_key"],
+                difference["column"],
+                difference["file1"],
+                difference["file2"],
+            ]
+            for difference in result.differences
+        ]
+        return headers, rows
+
+    headers = ["Status", "Line", "File 1", "File 2"]
+    rows = [
+        [
+            difference["status"],
+            difference["line"],
+            difference["file1"],
+            difference["file2"],
+        ]
+        for difference in result.differences
+    ]
+    return headers, rows
+
+
+def write_csv_report(result: ComparisonResult, output_path: Path) -> Path:
+    csv_path = output_path.with_suffix(".csv")
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    headers, rows = build_details_table(result)
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Campo", "Valore"])
+        for field, value in result.summary.items():
+            writer.writerow([field, value])
+        writer.writerow([])
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+    return csv_path
+
+
+def write_excel_report(result: ComparisonResult, output_path: Path) -> Path:
+    headers, detail_rows = build_details_table(result)
+    if len(detail_rows) + 1 > MAX_EXCEL_ROWS:
+        return write_csv_report(result, output_path)
+
     workbook = Workbook()
     summary_sheet = workbook.active
     summary_sheet.title = "Summary"
@@ -308,31 +358,9 @@ def write_excel_report(result: ComparisonResult, output_path: Path) -> None:
     summary_sheet.freeze_panes = "A2"
 
     details_sheet = workbook.create_sheet("Differences")
-    if result.mode == "tabular":
-        headers = ["Status", "Record Key", "Column", "File 1", "File 2"]
-        details_sheet.append(headers)
-        for difference in result.differences:
-            details_sheet.append(
-                [
-                    difference["status"],
-                    difference["record_key"],
-                    difference["column"],
-                    difference["file1"],
-                    difference["file2"],
-                ]
-            )
-    else:
-        headers = ["Status", "Line", "File 1", "File 2"]
-        details_sheet.append(headers)
-        for difference in result.differences:
-            details_sheet.append(
-                [
-                    difference["status"],
-                    difference["line"],
-                    difference["file1"],
-                    difference["file2"],
-                ]
-            )
+    details_sheet.append(headers)
+    for row in detail_rows:
+        details_sheet.append(row)
 
     details_sheet.freeze_panes = "A2"
     details_sheet.auto_filter.ref = details_sheet.dimensions
@@ -350,6 +378,7 @@ def write_excel_report(result: ComparisonResult, output_path: Path) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
+    return output_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -383,11 +412,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         result = auto_compare(args.file1, args.file2, args.key_spec)
-        write_excel_report(result, args.output)
+        report_path = write_excel_report(result, args.output)
     except ComparisonError as exc:
         parser.error(str(exc))
 
-    print(f"Report generato: {args.output}")
+    print(f"Report generato: {report_path}")
     return 0
 
 

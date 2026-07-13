@@ -34,3 +34,5 @@ Il file Excel prodotto contiene:
 
 - `Summary`: riepilogo del confronto
 - `Differences`: dettaglio delle differenze con evidenziazione colore
+
+Se il dettaglio supera il limite di righe supportato da Excel, il report viene salvato automaticamente in formato `.csv` nello stesso percorso richiesto, sostituendo l'estensione del file di output.
