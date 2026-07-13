@@ -2,6 +2,7 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
@@ -94,6 +95,50 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(result.summary["changed"], 0)
             self.assertEqual(result.summary["added"], 0)
             self.assertEqual(result.summary["removed"], 0)
+
+    def test_write_excel_report_falls_back_to_csv_over_limit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.csv"
+            right = tmp_path / "right.csv"
+            report = tmp_path / "report.xlsx"
+
+            with left.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerows(
+                    [
+                        ["id", "name", "city"],
+                        ["1", "Alice", "Rome"],
+                        ["2", "Bob", "Milan"],
+                    ]
+                )
+
+            with right.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerows(
+                    [
+                        ["id", "name", "city"],
+                        ["1", "Alice", "Turin"],
+                        ["3", "Carla", "Naples"],
+                    ]
+                )
+
+            result = auto_compare(left, right, "1")
+
+            with patch("compare_files.MAX_EXCEL_ROWS", 5):
+                actual_report = write_excel_report(result, report)
+
+            self.assertEqual(actual_report, report.with_suffix(".csv"))
+            self.assertFalse(report.exists())
+            self.assertTrue(actual_report.exists())
+
+            with actual_report.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.reader(handle))
+
+            self.assertEqual(rows[0], ["Campo", "Valore"])
+            self.assertIn(["changed", "1"], rows)
+            self.assertIn(["Status", "Record Key", "Column", "File 1", "File 2"], rows)
+            self.assertIn(["CHANGED", "1", "city", "Rome", "Turin"], rows)
 
 
 if __name__ == "__main__":
