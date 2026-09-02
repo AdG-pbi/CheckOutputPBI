@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from docx import Document
+from docx.enum.text import WD_BREAK
 from openpyxl import Workbook, load_workbook
 
 from compare_files import auto_compare, parse_key_spec, write_excel_report
@@ -71,6 +73,68 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(result.mode, "text")
             self.assertEqual(result.summary["changed"], 2)
             self.assertEqual(result.differences[0]["status"], "CHANGED")
+            self.assertEqual(result.differences[0]["location_file1"], "Riga 2")
+            self.assertEqual(result.differences[0]["location_file2"], "Riga 2")
+
+    def test_compare_pdf_files_exposes_page_and_line_locations(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.pdf"
+            right = tmp_path / "right.pdf"
+            left.write_bytes(b"%PDF-1.7")
+            right.write_bytes(b"%PDF-1.7")
+
+            class FakePage:
+                def __init__(self, text):
+                    self._text = text
+
+                def extract_text(self):
+                    return self._text
+
+            class FakeReader:
+                def __init__(self, pages):
+                    self.pages = pages
+
+            with patch(
+                "compare_files.PdfReader",
+                side_effect=[
+                    FakeReader([FakePage("Titolo\nValore A"), FakePage("Conclusione")]),
+                    FakeReader([FakePage("Titolo\nValore B"), FakePage("Conclusione")]),
+                ],
+            ):
+                result = auto_compare(left, right)
+
+            changed_rows = [row for row in result.differences if row["status"] == "CHANGED"]
+            self.assertEqual(len(changed_rows), 1)
+            self.assertEqual(changed_rows[0]["location_file1"], "Pag. 1, riga 2")
+            self.assertEqual(changed_rows[0]["location_file2"], "Pag. 1, riga 2")
+
+    def test_compare_docx_files_exposes_estimated_page_locations(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.docx"
+            right = tmp_path / "right.docx"
+
+            doc_left = Document()
+            doc_left.add_paragraph("Introduzione")
+            break_paragraph_left = doc_left.add_paragraph()
+            break_paragraph_left.add_run().add_break(WD_BREAK.PAGE)
+            doc_left.add_paragraph("Valore A")
+            doc_left.save(left)
+
+            doc_right = Document()
+            doc_right.add_paragraph("Introduzione")
+            break_paragraph_right = doc_right.add_paragraph()
+            break_paragraph_right.add_run().add_break(WD_BREAK.PAGE)
+            doc_right.add_paragraph("Valore B")
+            doc_right.save(right)
+
+            result = auto_compare(left, right)
+
+            changed_rows = [row for row in result.differences if row["status"] == "CHANGED"]
+            self.assertEqual(len(changed_rows), 1)
+            self.assertEqual(changed_rows[0]["location_file1"], "Pag. 2 (stimata), paragrafo 1")
+            self.assertEqual(changed_rows[0]["location_file2"], "Pag. 2 (stimata), paragrafo 1")
 
     def test_integer_float_equivalence_in_xlsx(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
