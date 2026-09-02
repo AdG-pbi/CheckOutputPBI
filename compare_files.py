@@ -204,7 +204,12 @@ def read_pdf_entries(path: Path) -> list[TextEntry]:
     entries: list[TextEntry] = []
     table_index = 0
     for page_number, page in enumerate(reader.pages, start=1):
-        text = page.extract_text() or ""
+        try:
+            text = page.extract_text(extraction_mode="layout") or ""
+        except TypeError:
+            text = page.extract_text() or ""
+        if not text:
+            text = page.extract_text() or ""
         active_table_row = 0
         active_table_title = ""
         previous_plain_line = ""
