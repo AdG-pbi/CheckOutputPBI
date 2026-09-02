@@ -140,6 +140,52 @@ class CompareFilesTests(unittest.TestCase):
             self.assertIn(["Status", "Record Key", "Column", "File 1", "File 2"], rows)
             self.assertIn(["CHANGED", "1", "city", "Rome", "Turin"], rows)
 
+    def test_compare_multi_sheet_xlsx_with_sheet_context(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.xlsx"
+            right = tmp_path / "right.xlsx"
+            report = tmp_path / "report.xlsx"
+
+            wb1 = Workbook()
+            ws1 = wb1.active
+            ws1.title = "Clienti"
+            ws1.append(["id", "name"])
+            ws1.append([1, "Alice"])
+
+            ws2 = wb1.create_sheet("Ordini")
+            ws2.append(["id", "total"])
+            ws2.append([100, 50])
+            wb1.save(left)
+
+            wb2 = Workbook()
+            ws1_b = wb2.active
+            ws1_b.title = "Clienti"
+            ws1_b.append(["id", "name"])
+            ws1_b.append([1, "Alicia"])
+
+            ws2_b = wb2.create_sheet("Ordini")
+            ws2_b.append(["id", "total"])
+            ws2_b.append([100, 50])
+            ws2_b.append([200, 10])
+            wb2.save(right)
+
+            result = auto_compare(left, right, "1")
+            write_excel_report(result, report)
+
+            self.assertEqual(result.summary["changed"], 1)
+            self.assertEqual(result.summary["added"], 1)
+            self.assertEqual(result.summary["removed"], 0)
+
+            workbook = load_workbook(report)
+            sheet = workbook["Differences"]
+            rows = list(sheet.iter_rows(values_only=True))
+            workbook.close()
+
+            self.assertEqual(rows[0], ("Status", "Sheet", "Record Key", "Column", "File 1", "File 2"))
+            self.assertIn(("CHANGED", "Clienti", "1", "name", "Alice", "Alicia"), rows)
+            self.assertIn(("ADDED", "Ordini", "200", "total", None, "10"), rows)
+
 
 if __name__ == "__main__":
     unittest.main()
