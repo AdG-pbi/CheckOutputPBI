@@ -176,6 +176,86 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(changed_rows[0]["context_file1"], "Dopo: Introduzione")
             self.assertEqual(changed_rows[0]["context_file2"], "Dopo: Introduzione")
 
+    def test_compare_docx_table_files_expose_table_title_row_and_column(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.docx"
+            right = tmp_path / "right.docx"
+
+            doc_left = Document()
+            doc_left.add_paragraph("Tabella Clienti")
+            table_left = doc_left.add_table(rows=3, cols=2)
+            table_left.cell(0, 0).text = "ID"
+            table_left.cell(0, 1).text = "Nome"
+            table_left.cell(1, 0).text = "1"
+            table_left.cell(1, 1).text = "Alice"
+            table_left.cell(2, 0).text = "2"
+            table_left.cell(2, 1).text = "Bob"
+            doc_left.save(left)
+
+            doc_right = Document()
+            doc_right.add_paragraph("Tabella Clienti")
+            table_right = doc_right.add_table(rows=3, cols=2)
+            table_right.cell(0, 0).text = "ID"
+            table_right.cell(0, 1).text = "Nome"
+            table_right.cell(1, 0).text = "1"
+            table_right.cell(1, 1).text = "Alice"
+            table_right.cell(2, 0).text = "2"
+            table_right.cell(2, 1).text = "Bobby"
+            doc_right.save(right)
+
+            result = auto_compare(left, right)
+
+            changed_rows = [row for row in result.differences if row["status"] == "CHANGED"]
+            self.assertEqual(len(changed_rows), 1)
+            self.assertEqual(
+                changed_rows[0]["location_file1"],
+                'Pag. 1 (stimata), tabella "Tabella Clienti", riga 3, colonna 2',
+            )
+            self.assertEqual(
+                changed_rows[0]["location_file2"],
+                'Pag. 1 (stimata), tabella "Tabella Clienti", riga 3, colonna 2',
+            )
+
+    def test_compare_pdf_table_files_expose_table_title_row_and_column(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.pdf"
+            right = tmp_path / "right.pdf"
+            left.write_bytes(b"%PDF-1.7")
+            right.write_bytes(b"%PDF-1.7")
+
+            class FakePage:
+                def __init__(self, text):
+                    self._text = text
+
+                def extract_text(self):
+                    return self._text
+
+            class FakeReader:
+                def __init__(self, pages):
+                    self.pages = pages
+
+            with patch(
+                "compare_files.PdfReader",
+                side_effect=[
+                    FakeReader([FakePage("Tabella Clienti\nID | Nome\n1 | Alice\n2 | Bob")]),
+                    FakeReader([FakePage("Tabella Clienti\nID | Nome\n1 | Alice\n2 | Bobby")]),
+                ],
+            ):
+                result = auto_compare(left, right)
+
+            changed_rows = [row for row in result.differences if row["status"] == "CHANGED"]
+            self.assertEqual(len(changed_rows), 1)
+            self.assertEqual(
+                changed_rows[0]["location_file1"],
+                'Pag. 1, tabella "Tabella Clienti", riga 3, colonna 2',
+            )
+            self.assertEqual(
+                changed_rows[0]["location_file2"],
+                'Pag. 1, tabella "Tabella Clienti", riga 3, colonna 2',
+            )
+
     def test_integer_float_equivalence_in_xlsx(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from docx import Document
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 from docx.oxml.ns import qn
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
@@ -121,13 +124,47 @@ def _paragraph_has_page_break(paragraph) -> bool:
     return False
 
 
+def _iter_docx_blocks(document) -> Iterator[Paragraph | Table]:
+    for child in document.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield Paragraph(child, document)
+        elif child.tag == qn("w:tbl"):
+            yield Table(child, document)
+
+
 def read_docx_entries(path: Path) -> list[TextEntry]:
     document = Document(path)
     entries: list[TextEntry] = []
     estimated_page = 1
     paragraph_in_page = 0
+    table_index = 0
+    latest_paragraph_title = ""
 
-    for paragraph in document.paragraphs:
+    for block in _iter_docx_blocks(document):
+        if isinstance(block, Paragraph):
+            paragraph = block
+        else:
+            table = block
+            table_index += 1
+            table_title = latest_paragraph_title or f"Tabella {table_index}"
+            table_row_number = 0
+            for row in table.rows:
+                row_values = [cell.text.strip() for cell in row.cells]
+                if not any(row_values):
+                    continue
+                table_row_number += 1
+                for column_number, cell_value in enumerate(row_values, start=1):
+                    entries.append(
+                        TextEntry(
+                            text=cell_value,
+                            location=(
+                                f'Pag. {estimated_page} (stimata), tabella "{table_title}", '
+                                f"riga {table_row_number}, colonna {column_number}"
+                            ),
+                        )
+                    )
+            continue
+
         if _paragraph_has_page_break(paragraph):
             estimated_page += 1
             paragraph_in_page = 0
@@ -137,6 +174,7 @@ def read_docx_entries(path: Path) -> list[TextEntry]:
             continue
 
         paragraph_in_page += 1
+        latest_paragraph_title = text
         entries.append(
             TextEntry(
                 text=text,
@@ -147,21 +185,59 @@ def read_docx_entries(path: Path) -> list[TextEntry]:
     return entries
 
 
+def _extract_table_cells(line: str) -> list[str] | None:
+    if "|" in line:
+        cells = [cell.strip() for cell in line.split("|")]
+    elif "\t" in line:
+        cells = [cell.strip() for cell in line.split("\t")]
+    else:
+        cells = [cell.strip() for cell in re.split(r"\s{2,}", line)]
+
+    non_empty_cells = [cell for cell in cells if cell]
+    if len(non_empty_cells) < 2:
+        return None
+    return cells
+
+
 def read_pdf_entries(path: Path) -> list[TextEntry]:
     reader = PdfReader(str(path))
     entries: list[TextEntry] = []
+    table_index = 0
     for page_number, page in enumerate(reader.pages, start=1):
         text = page.extract_text() or ""
+        active_table_row = 0
+        active_table_title = ""
+        previous_plain_line = ""
         for line_number, line in enumerate(text.splitlines(), start=1):
             stripped_line = line.strip()
             if not stripped_line:
                 continue
+            cells = _extract_table_cells(stripped_line)
+            if cells is not None:
+                if active_table_row == 0:
+                    table_index += 1
+                    active_table_title = previous_plain_line or f"Tabella {table_index}"
+                active_table_row += 1
+                for column_number, cell_value in enumerate(cells, start=1):
+                    entries.append(
+                        TextEntry(
+                            text=cell_value,
+                            location=(
+                                f'Pag. {page_number}, tabella "{active_table_title}", '
+                                f"riga {active_table_row}, colonna {column_number}"
+                            ),
+                        )
+                    )
+                continue
+
+            active_table_row = 0
             entries.append(
                 TextEntry(
                     text=stripped_line,
                     location=f"Pag. {page_number}, riga {line_number}",
                 )
             )
+            previous_plain_line = stripped_line
     return entries
 
 
