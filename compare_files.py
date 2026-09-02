@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from docx import Document
+from docx.oxml.ns import qn
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from pypdf import PdfReader
@@ -27,6 +28,12 @@ class ComparisonResult:
     mode: str
     differences: list[dict[str, str | int]]
     summary: dict[str, str | int]
+
+
+@dataclass(frozen=True)
+class TextEntry:
+    text: str
+    location: str
 
 
 class ComparisonError(ValueError):
@@ -86,18 +93,60 @@ def read_xlsx_sections(path: Path) -> dict[str, list[list[str]]]:
     return sections
 
 
-def read_docx_lines(path: Path) -> list[str]:
+def _build_line_entries(lines: list[str], prefix: str = "Riga") -> list[TextEntry]:
+    return [TextEntry(text=line, location=f"{prefix} {index}") for index, line in enumerate(lines, start=1)]
+
+
+def _paragraph_has_page_break(paragraph) -> bool:
+    for run in paragraph.runs:
+        for line_break in run._element.findall(".//w:br", run._element.nsmap):
+            if line_break.get(qn("w:type")) == "page":
+                return True
+    return False
+
+
+def read_docx_entries(path: Path) -> list[TextEntry]:
     document = Document(path)
-    return [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+    entries: list[TextEntry] = []
+    estimated_page = 1
+    paragraph_in_page = 0
+
+    for paragraph in document.paragraphs:
+        if _paragraph_has_page_break(paragraph):
+            estimated_page += 1
+            paragraph_in_page = 0
+
+        text = paragraph.text.strip()
+        if not text:
+            continue
+
+        paragraph_in_page += 1
+        entries.append(
+            TextEntry(
+                text=text,
+                location=f"Pag. {estimated_page} (stimata), paragrafo {paragraph_in_page}",
+            )
+        )
+
+    return entries
 
 
-def read_pdf_lines(path: Path) -> list[str]:
+def read_pdf_entries(path: Path) -> list[TextEntry]:
     reader = PdfReader(str(path))
-    lines: list[str] = []
-    for page in reader.pages:
+    entries: list[TextEntry] = []
+    for page_number, page in enumerate(reader.pages, start=1):
         text = page.extract_text() or ""
-        lines.extend(line.strip() for line in text.splitlines() if line.strip())
-    return lines
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            stripped_line = line.strip()
+            if not stripped_line:
+                continue
+            entries.append(
+                TextEntry(
+                    text=stripped_line,
+                    location=f"Pag. {page_number}, riga {line_number}",
+                )
+            )
+    return entries
 
 
 def read_doc_lines(path: Path) -> list[str]:
@@ -107,12 +156,17 @@ def read_doc_lines(path: Path) -> list[str]:
 
 
 def read_text_lines(path: Path) -> list[str]:
+    return [entry.text for entry in read_text_entries(path)]
+
+
+def read_text_entries(path: Path) -> list[TextEntry]:
     extension = path.suffix.lower()
     if extension == ".txt":
         with path.open("r", encoding="utf-8-sig") as handle:
-            return [line.rstrip("\n") for line in handle]
+            lines = [line.rstrip("\n") for line in handle]
+        return _build_line_entries(lines)
     if extension == ".csv":
-        return ["\t".join(row) for row in read_csv_rows(path)]
+        return _build_line_entries(["\t".join(row) for row in read_csv_rows(path)])
     if extension in {".xlsx", ".xlsm"}:
         sections = read_xlsx_sections(path)
         lines: list[str] = []
@@ -121,17 +175,18 @@ def read_text_lines(path: Path) -> list[str]:
             if include_sheet_markers:
                 lines.append(f"[{sheet_name}]")
             lines.extend("\t".join(row) for row in rows)
-        return lines
+        return _build_line_entries(lines)
     if extension == ".pdf":
-        return read_pdf_lines(path)
+        return read_pdf_entries(path)
     if extension == ".docx":
-        return read_docx_lines(path)
+        return read_docx_entries(path)
     if extension == ".doc":
         return read_doc_lines(path)
 
     try:
         with path.open("r", encoding="utf-8-sig") as handle:
-            return [line.rstrip("\n") for line in handle]
+            lines = [line.rstrip("\n") for line in handle]
+        return _build_line_entries(lines)
     except UnicodeDecodeError as exc:
         raise ComparisonError(f"Formato non supportato per la lettura testuale: {path.suffix}") from exc
 
@@ -292,8 +347,10 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
 
 
 def compare_text_files(file1: Path, file2: Path) -> ComparisonResult:
-    lines1 = read_text_lines(file1)
-    lines2 = read_text_lines(file2)
+    entries1 = read_text_entries(file1)
+    entries2 = read_text_entries(file2)
+    lines1 = [entry.text for entry in entries1]
+    lines2 = [entry.text for entry in entries2]
     matcher = SequenceMatcher(a=lines1, b=lines2)
     differences: list[dict[str, str | int]] = []
     added = removed = changed = 0
@@ -305,14 +362,28 @@ def compare_text_files(file1: Path, file2: Path) -> ComparisonResult:
             for offset, line in enumerate(lines1[i1:i2], start=i1 + 1):
                 removed += 1
                 differences.append(
-                    {"status": "REMOVED", "line": offset, "file1": line, "file2": ""}
+                    {
+                        "status": "REMOVED",
+                        "line": offset,
+                        "location_file1": entries1[offset - 1].location,
+                        "location_file2": "",
+                        "file1": line,
+                        "file2": "",
+                    }
                 )
             continue
         if tag == "insert":
             for offset, line in enumerate(lines2[j1:j2], start=j1 + 1):
                 added += 1
                 differences.append(
-                    {"status": "ADDED", "line": offset, "file1": "", "file2": line}
+                    {
+                        "status": "ADDED",
+                        "line": offset,
+                        "location_file1": "",
+                        "location_file2": entries2[offset - 1].location,
+                        "file1": "",
+                        "file2": line,
+                    }
                 )
             continue
 
@@ -321,10 +392,14 @@ def compare_text_files(file1: Path, file2: Path) -> ComparisonResult:
         max_len = max(len(left), len(right))
         for index in range(max_len):
             changed += 1
+            left_index = i1 + index
+            right_index = j1 + index
             differences.append(
                 {
                     "status": "CHANGED",
                     "line": max(i1, j1) + index + 1,
+                    "location_file1": entries1[left_index].location if left_index < len(entries1) else "",
+                    "location_file2": entries2[right_index].location if right_index < len(entries2) else "",
                     "file1": left[index] if index < len(left) else "",
                     "file2": right[index] if index < len(right) else "",
                 }
@@ -376,11 +451,13 @@ def build_details_table(result: ComparisonResult) -> tuple[list[str], list[list[
             rows.append(row)
         return headers, rows
 
-    headers = ["Status", "Line", "File 1", "File 2"]
+    headers = ["Status", "Line", "Posizione File 1", "Posizione File 2", "File 1", "File 2"]
     rows = [
         [
             difference["status"],
             difference["line"],
+            difference.get("location_file1", ""),
+            difference.get("location_file2", ""),
             difference["file1"],
             difference["file2"],
         ]
