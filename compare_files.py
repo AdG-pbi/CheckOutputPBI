@@ -13,6 +13,7 @@ from openpyxl.styles import PatternFill
 from pypdf import PdfReader
 
 TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+DEFAULT_TABULAR_SECTION = "__tabular__"
 MAX_EXCEL_ROWS = 1_048_576
 STATUS_FILLS = {
     "ADDED": PatternFill(fill_type="solid", fgColor="C6EFCE"),
@@ -65,12 +66,24 @@ def _normalize_cell(cell: object) -> str:
 
 def read_xlsx_rows(path: Path) -> list[list[str]]:
     workbook = load_workbook(path, read_only=True, data_only=True)
-    sheet = workbook.active
+    active_sheet = workbook.active
     rows = []
-    for row in sheet.iter_rows(values_only=True):
+    for row in active_sheet.iter_rows(values_only=True):
         rows.append([_normalize_cell(cell) for cell in row])
     workbook.close()
     return rows
+
+
+def read_xlsx_sections(path: Path) -> dict[str, list[list[str]]]:
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    sections: dict[str, list[list[str]]] = {}
+    for sheet in workbook.worksheets:
+        rows = []
+        for row in sheet.iter_rows(values_only=True):
+            rows.append([_normalize_cell(cell) for cell in row])
+        sections[sheet.title] = rows
+    workbook.close()
+    return sections
 
 
 def read_docx_lines(path: Path) -> list[str]:
@@ -101,7 +114,14 @@ def read_text_lines(path: Path) -> list[str]:
     if extension == ".csv":
         return ["\t".join(row) for row in read_csv_rows(path)]
     if extension in {".xlsx", ".xlsm"}:
-        return ["\t".join(row) for row in read_xlsx_rows(path)]
+        sections = read_xlsx_sections(path)
+        lines: list[str] = []
+        include_sheet_markers = len(sections) > 1
+        for sheet_name, rows in sections.items():
+            if include_sheet_markers:
+                lines.append(f"[{sheet_name}]")
+            lines.extend("\t".join(row) for row in rows)
+        return lines
     if extension == ".pdf":
         return read_pdf_lines(path)
     if extension == ".docx":
@@ -117,11 +137,18 @@ def read_text_lines(path: Path) -> list[str]:
 
 
 def read_tabular_rows(path: Path) -> list[list[str]]:
+    sections = read_tabular_sections(path)
+    if not sections:
+        return []
+    return next(iter(sections.values()))
+
+
+def read_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
     extension = path.suffix.lower()
     if extension == ".csv":
-        return read_csv_rows(path)
+        return {DEFAULT_TABULAR_SECTION: read_csv_rows(path)}
     if extension in {".xlsx", ".xlsm"}:
-        return read_xlsx_rows(path)
+        return read_xlsx_sections(path)
     raise ComparisonError(f"Formato tabellare non supportato: {path.suffix}")
 
 
@@ -162,64 +189,91 @@ def rows_to_mapping(rows: list[list[str]], key_indexes: tuple[int, ...] | None, 
 
 
 def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...] | None) -> ComparisonResult:
-    rows1 = read_tabular_rows(file1)
-    rows2 = read_tabular_rows(file2)
-    header, data1, data2 = split_header(rows1, rows2)
-    width = len(header)
-    mapping1 = rows_to_mapping(data1, key_indexes, width)
-    mapping2 = rows_to_mapping(data2, key_indexes, width)
+    sections1 = read_tabular_sections(file1)
+    sections2 = read_tabular_sections(file2)
+    compare_single_section = len(sections1) == 1 and len(sections2) == 1
+
+    if compare_single_section:
+        only_rows1 = next(iter(sections1.values()))
+        only_rows2 = next(iter(sections2.values()))
+        sections_to_compare = [(None, only_rows1, only_rows2)]
+    else:
+        section_names = sorted(set(sections1) | set(sections2))
+        sections_to_compare = [
+            (name, sections1.get(name, []), sections2.get(name, [])) for name in section_names
+        ]
 
     differences: list[dict[str, str | int]] = []
     added = removed = changed = 0
+    records_file1 = records_file2 = 0
 
-    for record_key in sorted(set(mapping1) | set(mapping2)):
-        row1 = mapping1.get(record_key)
-        row2 = mapping2.get(record_key)
+    for section_name, rows1, rows2 in sections_to_compare:
+        if rows1 and not rows2:
+            header = [cell or f"Colonna {index + 1}" for index, cell in enumerate(rows1[0])]
+            data1, data2 = rows1[1:], []
+        elif rows2 and not rows1:
+            header = [cell or f"Colonna {index + 1}" for index, cell in enumerate(rows2[0])]
+            data1, data2 = [], rows2[1:]
+        else:
+            header, data1, data2 = split_header(rows1, rows2)
 
-        if row1 is None and row2 is not None:
-            added += 1
-            for column_name, value2 in zip(header, row2):
-                differences.append(
-                    {
+        width = len(header)
+        mapping1 = rows_to_mapping(data1, key_indexes, width)
+        mapping2 = rows_to_mapping(data2, key_indexes, width)
+        records_file1 += len(data1)
+        records_file2 += len(data2)
+
+        for record_key in sorted(set(mapping1) | set(mapping2)):
+            row1 = mapping1.get(record_key)
+            row2 = mapping2.get(record_key)
+
+            if row1 is None and row2 is not None:
+                added += 1
+                for column_name, value2 in zip(header, row2):
+                    difference: dict[str, str | int] = {
                         "status": "ADDED",
                         "record_key": record_key,
                         "column": column_name,
                         "file1": "",
                         "file2": value2,
                     }
-                )
-            continue
+                    if section_name is not None:
+                        difference["sheet"] = section_name
+                    differences.append(difference)
+                continue
 
-        if row2 is None and row1 is not None:
-            removed += 1
-            for column_name, value1 in zip(header, row1):
-                differences.append(
-                    {
+            if row2 is None and row1 is not None:
+                removed += 1
+                for column_name, value1 in zip(header, row1):
+                    difference = {
                         "status": "REMOVED",
                         "record_key": record_key,
                         "column": column_name,
                         "file1": value1,
                         "file2": "",
                     }
-                )
-            continue
+                    if section_name is not None:
+                        difference["sheet"] = section_name
+                    differences.append(difference)
+                continue
 
-        assert row1 is not None and row2 is not None
-        row_changed = False
-        for column_name, value1, value2 in zip(header, row1, row2):
-            if value1 != value2:
-                row_changed = True
-                differences.append(
-                    {
+            assert row1 is not None and row2 is not None
+            row_changed = False
+            for column_name, value1, value2 in zip(header, row1, row2):
+                if value1 != value2:
+                    row_changed = True
+                    difference = {
                         "status": "CHANGED",
                         "record_key": record_key,
                         "column": column_name,
                         "file1": value1,
                         "file2": value2,
                     }
-                )
-        if row_changed:
-            changed += 1
+                    if section_name is not None:
+                        difference["sheet"] = section_name
+                    differences.append(difference)
+            if row_changed:
+                changed += 1
 
     return ComparisonResult(
         mode="tabular",
@@ -228,8 +282,8 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
             "file1": str(file1),
             "file2": str(file2),
             "key": "auto-riga" if key_indexes is None else "+".join(str(index + 1) for index in key_indexes),
-            "records_file1": len(data1),
-            "records_file2": len(data2),
+            "records_file1": records_file1,
+            "records_file2": records_file2,
             "added": added,
             "removed": removed,
             "changed": changed,
@@ -303,17 +357,23 @@ def auto_compare(file1: Path, file2: Path, key_spec: str | None = None) -> Compa
 
 def build_details_table(result: ComparisonResult) -> tuple[list[str], list[list[str | int]]]:
     if result.mode == "tabular":
+        include_sheet = any("sheet" in difference for difference in result.differences)
         headers = ["Status", "Record Key", "Column", "File 1", "File 2"]
-        rows = [
-            [
+        if include_sheet:
+            headers.insert(1, "Sheet")
+
+        rows = []
+        for difference in result.differences:
+            row: list[str | int] = [
                 difference["status"],
                 difference["record_key"],
                 difference["column"],
                 difference["file1"],
                 difference["file2"],
             ]
-            for difference in result.differences
-        ]
+            if include_sheet:
+                row.insert(1, difference.get("sheet", ""))
+            rows.append(row)
         return headers, rows
 
     headers = ["Status", "Line", "File 1", "File 2"]

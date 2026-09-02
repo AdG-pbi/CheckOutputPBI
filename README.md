@@ -28,6 +28,8 @@ Per i file tabellari puoi passare una chiave record composta da più campi usand
 python compare_files.py prima.csv seconda.csv -k 1+5 -o differenze.xlsx
 ```
 
+Nei file Excel (`.xlsx`/`.xlsm`) vengono considerati anche workbook con più fogli: il confronto viene eseguito per nome foglio.
+
 ## Output
 
 Il file Excel prodotto contiene:
