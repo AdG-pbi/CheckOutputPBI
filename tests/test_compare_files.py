@@ -124,7 +124,7 @@ class CompareFilesTests(unittest.TestCase):
                 def __init__(self, text):
                     self._text = text
 
-                def extract_text(self):
+                def extract_text(self, *args, **kwargs):
                     return self._text
 
             class FakeReader:
@@ -229,7 +229,7 @@ class CompareFilesTests(unittest.TestCase):
                 def __init__(self, text):
                     self._text = text
 
-                def extract_text(self):
+                def extract_text(self, *args, **kwargs):
                     return self._text
 
             class FakeReader:
@@ -241,6 +241,62 @@ class CompareFilesTests(unittest.TestCase):
                 side_effect=[
                     FakeReader([FakePage("Tabella Clienti\nID | Nome\n1 | Alice\n2 | Bob")]),
                     FakeReader([FakePage("Tabella Clienti\nID | Nome\n1 | Alice\n2 | Bobby")]),
+                ],
+            ):
+                result = auto_compare(left, right)
+
+            changed_rows = [row for row in result.differences if row["status"] == "CHANGED"]
+            self.assertEqual(len(changed_rows), 1)
+            self.assertEqual(
+                changed_rows[0]["location_file1"],
+                'Pag. 1, tabella "Tabella Clienti", riga 3, colonna 2',
+            )
+            self.assertEqual(
+                changed_rows[0]["location_file2"],
+                'Pag. 1, tabella "Tabella Clienti", riga 3, colonna 2',
+            )
+
+    def test_compare_pdf_table_files_use_layout_extraction_when_plain_text_is_flattened(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.pdf"
+            right = tmp_path / "right.pdf"
+            left.write_bytes(b"%PDF-1.7")
+            right.write_bytes(b"%PDF-1.7")
+
+            class FakePage:
+                def __init__(self, plain_text, layout_text):
+                    self._plain_text = plain_text
+                    self._layout_text = layout_text
+
+                def extract_text(self, *args, **kwargs):
+                    if kwargs.get("extraction_mode") == "layout":
+                        return self._layout_text
+                    return self._plain_text
+
+            class FakeReader:
+                def __init__(self, pages):
+                    self.pages = pages
+
+            with patch(
+                "compare_files.PdfReader",
+                side_effect=[
+                    FakeReader(
+                        [
+                            FakePage(
+                                "Tabella Clienti\nID Nome\n1 Alice\n2 Bob",
+                                "Tabella Clienti\nID      Nome\n1       Alice\n2       Bob",
+                            )
+                        ]
+                    ),
+                    FakeReader(
+                        [
+                            FakePage(
+                                "Tabella Clienti\nID Nome\n1 Alice\n2 Bobby",
+                                "Tabella Clienti\nID      Nome\n1       Alice\n2       Bobby",
+                            )
+                        ]
+                    ),
                 ],
             ):
                 result = auto_compare(left, right)
