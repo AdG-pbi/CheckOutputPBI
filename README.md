@@ -37,6 +37,6 @@ Il file Excel prodotto contiene:
 - `Summary`: riepilogo del confronto
 - `Differences`: dettaglio delle differenze con evidenziazione colore
 
-Per confronti testuali, il dettaglio include anche la posizione del punto differente nei due file; con input `.pdf` viene indicata pagina/riga, con `.docx` viene indicata pagina stimata/paragrafo.
+Per confronti testuali, il dettaglio include anche la posizione del punto differente nei due file e due colonne di contesto con il testo immediatamente precedente e successivo. In questo modo, per input `.pdf` e `.docx` è più semplice individuare il passaggio corretto senza affidarsi solo al conteggio di righe o paragrafi.
 
 Se il dettaglio supera il limite di righe supportato da Excel, il report viene salvato automaticamente in formato `.csv` nello stesso percorso richiesto, sostituendo l'estensione del file di output.
