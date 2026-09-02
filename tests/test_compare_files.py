@@ -64,17 +64,53 @@ class CompareFilesTests(unittest.TestCase):
             tmp_path = Path(tmp_dir)
             left = tmp_path / "left.txt"
             right = tmp_path / "right.txt"
+            report = tmp_path / "report.xlsx"
 
             left.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
             right.write_text("alpha\nbeta 2\ndelta\n", encoding="utf-8")
 
             result = auto_compare(left, right)
+            write_excel_report(result, report)
 
             self.assertEqual(result.mode, "text")
             self.assertEqual(result.summary["changed"], 2)
             self.assertEqual(result.differences[0]["status"], "CHANGED")
             self.assertEqual(result.differences[0]["location_file1"], "Riga 2")
             self.assertEqual(result.differences[0]["location_file2"], "Riga 2")
+            self.assertEqual(result.differences[0]["context_file1"], "Dopo: alpha | Prima di: gamma")
+            self.assertEqual(result.differences[0]["context_file2"], "Dopo: alpha | Prima di: delta")
+
+            workbook = load_workbook(report)
+            sheet = workbook["Differences"]
+            rows = list(sheet.iter_rows(values_only=True))
+            workbook.close()
+
+            self.assertEqual(
+                rows[0],
+                (
+                    "Status",
+                    "Line",
+                    "Posizione File 1",
+                    "Contesto File 1",
+                    "Posizione File 2",
+                    "Contesto File 2",
+                    "File 1",
+                    "File 2",
+                ),
+            )
+            self.assertIn(
+                (
+                    "CHANGED",
+                    2,
+                    "Riga 2",
+                    "Dopo: alpha | Prima di: gamma",
+                    "Riga 2",
+                    "Dopo: alpha | Prima di: delta",
+                    "beta",
+                    "beta 2",
+                ),
+                rows,
+            )
 
     def test_compare_pdf_files_exposes_page_and_line_locations(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -108,6 +144,8 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(len(changed_rows), 1)
             self.assertEqual(changed_rows[0]["location_file1"], "Pag. 1, riga 2")
             self.assertEqual(changed_rows[0]["location_file2"], "Pag. 1, riga 2")
+            self.assertEqual(changed_rows[0]["context_file1"], "Dopo: Titolo | Prima di: Conclusione")
+            self.assertEqual(changed_rows[0]["context_file2"], "Dopo: Titolo | Prima di: Conclusione")
 
     def test_compare_docx_files_exposes_estimated_page_locations(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -135,6 +173,8 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(len(changed_rows), 1)
             self.assertEqual(changed_rows[0]["location_file1"], "Pag. 2 (stimata), paragrafo 1")
             self.assertEqual(changed_rows[0]["location_file2"], "Pag. 2 (stimata), paragrafo 1")
+            self.assertEqual(changed_rows[0]["context_file1"], "Dopo: Introduzione")
+            self.assertEqual(changed_rows[0]["context_file2"], "Dopo: Introduzione")
 
     def test_integer_float_equivalence_in_xlsx(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

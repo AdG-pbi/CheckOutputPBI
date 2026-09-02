@@ -40,6 +40,22 @@ class ComparisonError(ValueError):
     pass
 
 
+def _shorten_text(text: str, max_length: int = 60) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= max_length:
+        return collapsed
+    return f"{collapsed[: max_length - 3].rstrip()}..."
+
+
+def build_entry_context(entries: Sequence[TextEntry], index: int) -> str:
+    parts: list[str] = []
+    if index > 0:
+        parts.append(f"Dopo: {_shorten_text(entries[index - 1].text)}")
+    if index + 1 < len(entries):
+        parts.append(f"Prima di: {_shorten_text(entries[index + 1].text)}")
+    return " | ".join(parts)
+
+
 def parse_key_spec(key_spec: str | None) -> tuple[int, ...] | None:
     if not key_spec:
         return None
@@ -366,7 +382,9 @@ def compare_text_files(file1: Path, file2: Path) -> ComparisonResult:
                         "status": "REMOVED",
                         "line": offset,
                         "location_file1": entries1[offset - 1].location,
+                        "context_file1": build_entry_context(entries1, offset - 1),
                         "location_file2": "",
+                        "context_file2": "",
                         "file1": line,
                         "file2": "",
                     }
@@ -380,7 +398,9 @@ def compare_text_files(file1: Path, file2: Path) -> ComparisonResult:
                         "status": "ADDED",
                         "line": offset,
                         "location_file1": "",
+                        "context_file1": "",
                         "location_file2": entries2[offset - 1].location,
+                        "context_file2": build_entry_context(entries2, offset - 1),
                         "file1": "",
                         "file2": line,
                     }
@@ -399,7 +419,9 @@ def compare_text_files(file1: Path, file2: Path) -> ComparisonResult:
                     "status": "CHANGED",
                     "line": max(i1, j1) + index + 1,
                     "location_file1": entries1[left_index].location if left_index < len(entries1) else "",
+                    "context_file1": build_entry_context(entries1, left_index) if left_index < len(entries1) else "",
                     "location_file2": entries2[right_index].location if right_index < len(entries2) else "",
+                    "context_file2": build_entry_context(entries2, right_index) if right_index < len(entries2) else "",
                     "file1": left[index] if index < len(left) else "",
                     "file2": right[index] if index < len(right) else "",
                 }
@@ -451,13 +473,24 @@ def build_details_table(result: ComparisonResult) -> tuple[list[str], list[list[
             rows.append(row)
         return headers, rows
 
-    headers = ["Status", "Line", "Posizione File 1", "Posizione File 2", "File 1", "File 2"]
+    headers = [
+        "Status",
+        "Line",
+        "Posizione File 1",
+        "Contesto File 1",
+        "Posizione File 2",
+        "Contesto File 2",
+        "File 1",
+        "File 2",
+    ]
     rows = [
         [
             difference["status"],
             difference["line"],
             difference.get("location_file1", ""),
+            difference.get("context_file1", ""),
             difference.get("location_file2", ""),
+            difference.get("context_file2", ""),
             difference["file1"],
             difference["file2"],
         ]
