@@ -20,6 +20,11 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph as RLParagraph, SimpleDocTemplate, Spacer
 
+try:
+    import fitz
+except ImportError:  # pragma: no cover - handled at runtime when PDF highlight is requested
+    fitz = None
+
 TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
 HIGHLIGHT_SOURCE_EXTENSIONS = {".pdf", ".docx"}
 DEFAULT_TABULAR_SECTION = "__tabular__"
@@ -567,6 +572,62 @@ def build_file2_highlight_lines(lines1: Sequence[str], lines2: Sequence[str]) ->
     return highlighted_lines
 
 
+def _build_changed_line_flags(lines1: Sequence[str], lines2: Sequence[str]) -> list[bool]:
+    matcher = SequenceMatcher(a=lines1, b=lines2)
+    changed_flags = [False] * len(lines2)
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        for index in range(j1, j2):
+            changed_flags[index] = True
+    return changed_flags
+
+
+def _extract_pdf_visual_lines(path: Path) -> list[tuple[int, str, str]]:
+    if fitz is None:
+        raise ComparisonError(
+            "PyMuPDF non è installato. Installa le dipendenze (`python -m pip install -r requirements.txt`) "
+            "per generare il PDF evidenziato mantenendo il layout originale."
+        )
+
+    entries: list[tuple[int, str, str]] = []
+    with fitz.open(path) as document:
+        for page_index, page in enumerate(document):
+            for line in page.get_text("text").splitlines():
+                normalized = line.strip()
+                if not normalized:
+                    continue
+                entries.append((page_index, line, normalized))
+    return entries
+
+
+def _write_layout_preserving_highlight_pdf(file1: Path, file2: Path, output_path: Path) -> Path:
+    file2_lines = _extract_pdf_visual_lines(file2)
+    lines2_for_diff = [normalized for _, _, normalized in file2_lines]
+    if file1.suffix.lower() == ".pdf":
+        lines1_for_diff = [normalized for _, _, normalized in _extract_pdf_visual_lines(file1)]
+    else:
+        lines1_for_diff = read_text_lines(file1)
+    changed_flags = _build_changed_line_flags(lines1_for_diff, lines2_for_diff)
+
+    with fitz.open(file2) as document:
+        used_occurrences: dict[tuple[int, str], int] = {}
+        for (page_index, raw_line, _normalized), is_changed in zip(file2_lines, changed_flags):
+            if not is_changed:
+                continue
+            page = document[page_index]
+            matches = page.search_for(raw_line)
+            if not matches:
+                continue
+            key = (page_index, raw_line)
+            occurrence_index = used_occurrences.get(key, 0)
+            rect = matches[occurrence_index] if occurrence_index < len(matches) else matches[-1]
+            page.add_highlight_annot(rect)
+            used_occurrences[key] = occurrence_index + 1
+        document.save(output_path)
+    return output_path
+
+
 def _segments_to_pdf_markup(segments: Sequence[tuple[str, bool]]) -> str:
     if not segments:
         return "&nbsp;"
@@ -585,6 +646,10 @@ def _segments_to_pdf_markup(segments: Sequence[tuple[str, bool]]) -> str:
 def write_highlight_pdf_for_file2(file1: Path, file2: Path, output_path: Path) -> Path:
     if file2.suffix.lower() not in HIGHLIGHT_SOURCE_EXTENSIONS:
         raise ComparisonError("La generazione PDF evidenziata è supportata solo per file2 .pdf o .docx.")
+
+    if file2.suffix.lower() == ".pdf":
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        return _write_layout_preserving_highlight_pdf(file1, file2, output_path)
 
     entries1 = read_text_entries(file1)
     entries2 = read_text_entries(file2)

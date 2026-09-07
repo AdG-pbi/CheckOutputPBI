@@ -41,7 +41,9 @@ Per confronti testuali, il dettaglio include anche la posizione del punto differ
 
 Quando nei `.pdf` o `.docx` vengono intercettate tabelle, la posizione riporta anche il titolo della tabella e le coordinate della cella (`riga` e `colonna`) dove è stata rilevata la differenza.
 
-Se `file2` è `.pdf` o `.docx`, oltre al report tabellare viene generato automaticamente anche un PDF (`<nome_output>_file2_highlight.pdf`) basato sul contenuto di `file2`, con evidenziazione gialla dei caratteri/frasi/numeri che differiscono rispetto a `file1`.
+Se `file2` è `.pdf` o `.docx`, oltre al report tabellare viene generato automaticamente anche un PDF (`<nome_output>_file2_highlight.pdf`) basato sul contenuto di `file2`, con evidenziazione gialla delle differenze rispetto a `file1`.
+
+Per `file2` in formato `.pdf`, il PDF evidenziato mantiene lo stesso layout dell'originale: viene riutilizzato direttamente il file `file2` e vengono aggiunte solo le evidenziazioni.
 
 Per i `.pdf`, il parser prova anche un'estrazione in modalità "layout" per preservare meglio l'allineamento visivo del contenuto: questo aiuta a riconoscere correttamente tabelle che, in estrazione testuale semplice, verrebbero appiattite come testo normale.
 
