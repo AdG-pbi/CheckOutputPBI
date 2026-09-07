@@ -599,6 +599,33 @@ class CompareFilesTests(unittest.TestCase):
 
             self.assertIn(("CHANGED", "1", "name", "Alice", "Alicia"), clienti_rows)
 
+    def test_multi_sheet_report_maps_rows_when_section_name_has_whitespace(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            report = Path(tmp_dir) / "report.xlsx"
+            result = ComparisonResult(
+                mode="tabular",
+                differences=[
+                    {
+                        "status": "CHANGED",
+                        "sheet": " Clienti ",
+                        "record_key": "1",
+                        "column": "name",
+                        "file1": "Alice",
+                        "file2": "Alicia",
+                    }
+                ],
+                summary={"changed": 1},
+                sections=[" Clienti "],
+            )
+
+            write_excel_report(result, report)
+
+            workbook = load_workbook(report)
+            clienti_rows = list(workbook["Clienti"].iter_rows(values_only=True))
+            workbook.close()
+
+            self.assertIn(("CHANGED", "1", "name", "Alice", "Alicia"), clienti_rows)
+
     def test_read_xlsx_rows_includes_all_sheets(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
