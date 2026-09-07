@@ -12,6 +12,7 @@ from compare_files import (
     auto_compare,
     build_file2_highlight_lines,
     parse_key_spec,
+    read_xlsx_rows,
     write_excel_report,
     write_highlight_pdf_for_file2,
 )
@@ -525,6 +526,36 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(rows[0], ("Status", "Sheet", "Record Key", "Column", "File 1", "File 2"))
             self.assertIn(("CHANGED", "Clienti", "1", "name", "Alice", "Alicia"), rows)
             self.assertIn(("ADDED", "Ordini", "200", "total", None, "10"), rows)
+
+    def test_read_xlsx_rows_includes_all_sheets(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            workbook_path = tmp_path / "multi.xlsx"
+
+            workbook = Workbook()
+            first_sheet = workbook.active
+            first_sheet.title = "Clienti"
+            first_sheet.append(["id", "name"])
+            first_sheet.append([1, "Alice"])
+
+            second_sheet = workbook.create_sheet("Ordini")
+            second_sheet.append(["id", "total"])
+            second_sheet.append([100, 50])
+            workbook.save(workbook_path)
+
+            rows = read_xlsx_rows(workbook_path)
+
+            self.assertEqual(
+                rows,
+                [
+                    ["[Clienti]"],
+                    ["id", "name"],
+                    ["1", "Alice"],
+                    ["[Ordini]"],
+                    ["id", "total"],
+                    ["100", "50"],
+                ],
+            )
 
 
 if __name__ == "__main__":
