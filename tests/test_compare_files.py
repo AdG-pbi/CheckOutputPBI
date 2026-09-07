@@ -145,6 +145,73 @@ class CompareFilesTests(unittest.TestCase):
             self.assertTrue(output_pdf.exists())
             self.assertGreater(output_pdf.stat().st_size, 0)
 
+    def test_write_highlight_pdf_for_pdf_file2_keeps_original_pdf_and_adds_only_changed_line_highlights(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.pdf"
+            right = tmp_path / "right.pdf"
+            output_pdf = tmp_path / "highlighted.pdf"
+            left.write_bytes(b"%PDF-1.7")
+            right.write_bytes(b"%PDF-1.7")
+
+            class FakePage:
+                def __init__(self, text):
+                    self._text = text
+                    self.highlights = []
+
+                def get_text(self, _mode):
+                    return self._text
+
+                def search_for(self, text):
+                    if text in self._text:
+                        return [f"rect::{text}"]
+                    return []
+
+                def add_highlight_annot(self, rect):
+                    self.highlights.append(rect)
+                    return rect
+
+            class FakeDocument:
+                def __init__(self, pages, source_path):
+                    self.pages = pages
+                    self.source_path = source_path
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def __iter__(self):
+                    return iter(self.pages)
+
+                def __getitem__(self, index):
+                    return self.pages[index]
+
+                def save(self, destination):
+                    Path(destination).write_bytes(self.source_path.read_bytes())
+
+            left_document = FakeDocument([FakePage("Riga invariata\nRiga A")], left)
+            right_page = FakePage("Riga invariata\nRiga B")
+            right_document = FakeDocument([right_page], right)
+
+            def fake_open(path):
+                path = Path(path)
+                if path == left:
+                    return left_document
+                if path == right:
+                    return right_document
+                self.fail(f"Unexpected path passed to fitz.open: {path}")
+
+            with patch("compare_files.fitz") as mock_fitz:
+                mock_fitz.open.side_effect = fake_open
+                actual_path = write_highlight_pdf_for_file2(left, right, output_pdf)
+
+            self.assertEqual(actual_path, output_pdf)
+            self.assertTrue(output_pdf.exists())
+            self.assertEqual(output_pdf.read_bytes(), right.read_bytes())
+            self.assertEqual(right_page.highlights, ["rect::Riga B"])
+
     def test_compare_pdf_files_exposes_page_and_line_locations(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
