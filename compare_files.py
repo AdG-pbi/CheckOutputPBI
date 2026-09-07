@@ -819,6 +819,8 @@ def _sanitize_excel_sheet_title(title: str, used_titles: set[str]) -> str:
         if candidate not in used_titles:
             return candidate
         suffix_index += 1
+
+
 def _format_detail_sheet(sheet) -> None:
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
