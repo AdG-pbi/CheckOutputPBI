@@ -29,6 +29,7 @@ TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
 HIGHLIGHT_SOURCE_EXTENSIONS = {".pdf", ".docx"}
 DEFAULT_TABULAR_SECTION = "__tabular__"
 MAX_EXCEL_ROWS = 1_048_576
+EMPTY_XLSX_SCAN_LIMIT = 100
 STATUS_FILLS = {
     "ADDED": PatternFill(fill_type="solid", fgColor="C6EFCE"),
     "REMOVED": PatternFill(fill_type="solid", fgColor="FFC7CE"),
@@ -119,12 +120,66 @@ def read_xlsx_rows(path: Path) -> list[list[str]]:
 
 
 def read_xlsx_sections(path: Path) -> dict[str, list[list[str]]]:
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    workbook = load_workbook(path, data_only=True)
     sections: dict[str, list[list[str]]] = {}
     for sheet in workbook.worksheets:
+        max_column = max(sheet.max_column, 1)
+        empty_rows = 0
+        row_index = 1
+        last_non_empty_row = 0
+        while empty_rows < EMPTY_XLSX_SCAN_LIMIT:
+            row_has_content = any(
+                _normalize_cell(sheet.cell(row=row_index, column=column_index).value)
+                for column_index in range(1, max_column + 1)
+            )
+            if row_has_content:
+                last_non_empty_row = row_index
+                empty_rows = 0
+            else:
+                empty_rows += 1
+            row_index += 1
+
+        if last_non_empty_row == 0:
+            sections[sheet.title] = []
+            continue
+
+        max_row = last_non_empty_row
+        empty_columns = 0
+        column_index = 1
+        last_non_empty_column = 0
+        while empty_columns < EMPTY_XLSX_SCAN_LIMIT:
+            column_has_content = any(
+                _normalize_cell(sheet.cell(row=row_index, column=column_index).value)
+                for row_index in range(1, max_row + 1)
+            )
+            if column_has_content:
+                last_non_empty_column = column_index
+                empty_columns = 0
+            else:
+                empty_columns += 1
+            column_index += 1
+
+        if last_non_empty_column == 0:
+            sections[sheet.title] = []
+            continue
+
+        non_empty_columns = [
+            candidate_column
+            for candidate_column in range(1, last_non_empty_column + 1)
+            if any(
+                _normalize_cell(sheet.cell(row=row_index, column=candidate_column).value)
+                for row_index in range(1, max_row + 1)
+            )
+        ]
+
         rows = []
-        for row in sheet.iter_rows(values_only=True):
-            rows.append([_normalize_cell(cell) for cell in row])
+        for current_row in range(1, max_row + 1):
+            normalized_row = [
+                _normalize_cell(sheet.cell(row=current_row, column=current_column).value)
+                for current_column in non_empty_columns
+            ]
+            if any(normalized_row):
+                rows.append(normalized_row)
         sections[sheet.title] = rows
     workbook.close()
     return sections
