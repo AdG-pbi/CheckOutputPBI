@@ -11,14 +11,14 @@ from typing import Iterator, Sequence
 
 from docx import Document
 from docx.table import Table
-from docx.text.paragraph import Paragraph
+from docx.text.paragraph import Paragraph as DocxParagraph
 from docx.oxml.ns import qn
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from pypdf import PdfReader
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import Paragraph as RLParagraph, SimpleDocTemplate, Spacer
 
 TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
 HIGHLIGHT_SOURCE_EXTENSIONS = {".pdf", ".docx"}
@@ -129,10 +129,10 @@ def _paragraph_has_page_break(paragraph) -> bool:
     return False
 
 
-def _iter_docx_blocks(document) -> Iterator[Paragraph | Table]:
+def _iter_docx_blocks(document) -> Iterator[DocxParagraph | Table]:
     for child in document.element.body.iterchildren():
         if child.tag == qn("w:p"):
-            yield Paragraph(child, document)
+            yield DocxParagraph(child, document)
         elif child.tag == qn("w:tbl"):
             yield Table(child, document)
 
@@ -146,7 +146,7 @@ def read_docx_entries(path: Path) -> list[TextEntry]:
     latest_paragraph_title = ""
 
     for block in _iter_docx_blocks(document):
-        if isinstance(block, Paragraph):
+        if isinstance(block, DocxParagraph):
             paragraph = block
         else:
             table = block
@@ -610,9 +610,9 @@ def write_highlight_pdf_for_file2(file1: Path, file2: Path, output_path: Path) -
         leading=11,
     )
 
-    story = [Paragraph(f"Confronto evidenziato basato su: {escape(file2.name)}", styles["Heading4"]), Spacer(1, 10)]
+    story = [RLParagraph(f"Confronto evidenziato basato su: {escape(file2.name)}", styles["Heading4"]), Spacer(1, 10)]
     for segments in highlighted_lines:
-        story.append(Paragraph(_segments_to_pdf_markup(segments), line_style))
+        story.append(RLParagraph(_segments_to_pdf_markup(segments), line_style))
         story.append(Spacer(1, 2))
 
     document.build(story)
