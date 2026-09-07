@@ -738,6 +738,33 @@ class CompareFilesTests(unittest.TestCase):
                 ],
             )
 
+    def test_read_xlsx_rows_skips_empty_rows_and_columns_but_keeps_scanning(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            workbook_path = tmp_path / "sparse.xlsx"
+
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Dati"
+            sheet["A1"] = "id"
+            sheet["D1"] = "name"
+            sheet["A2"] = 1
+            sheet["D2"] = "Alice"
+            sheet["A4"] = 2
+            sheet["D4"] = "Bob"
+            workbook.save(workbook_path)
+
+            rows = read_xlsx_rows(workbook_path)
+
+            self.assertEqual(
+                rows,
+                [
+                    ["id", "name"],
+                    ["1", "Alice"],
+                    ["2", "Bob"],
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
