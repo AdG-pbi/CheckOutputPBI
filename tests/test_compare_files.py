@@ -8,7 +8,13 @@ from docx import Document
 from docx.enum.text import WD_BREAK
 from openpyxl import Workbook, load_workbook
 
-from compare_files import auto_compare, parse_key_spec, write_excel_report
+from compare_files import (
+    auto_compare,
+    build_file2_highlight_lines,
+    parse_key_spec,
+    write_excel_report,
+    write_highlight_pdf_for_file2,
+)
 
 
 class CompareFilesTests(unittest.TestCase):
@@ -111,6 +117,33 @@ class CompareFilesTests(unittest.TestCase):
                 ),
                 rows,
             )
+
+    def test_build_file2_highlight_lines_marks_changed_characters_and_numbers(self):
+        highlighted = build_file2_highlight_lines(["Numero: 123"], ["Numero: 129"])
+
+        self.assertEqual(len(highlighted), 1)
+        self.assertEqual(highlighted[0], [("Numero: 12", False), ("9", True)])
+
+    def test_write_highlight_pdf_for_docx_file2_creates_pdf_output(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.docx"
+            right = tmp_path / "right.docx"
+            output_pdf = tmp_path / "highlighted.pdf"
+
+            doc_left = Document()
+            doc_left.add_paragraph("Valore A")
+            doc_left.save(left)
+
+            doc_right = Document()
+            doc_right.add_paragraph("Valore B")
+            doc_right.save(right)
+
+            actual_path = write_highlight_pdf_for_file2(left, right, output_pdf)
+
+            self.assertEqual(actual_path, output_pdf)
+            self.assertTrue(output_pdf.exists())
+            self.assertGreater(output_pdf.stat().st_size, 0)
 
     def test_compare_pdf_files_exposes_page_and_line_locations(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

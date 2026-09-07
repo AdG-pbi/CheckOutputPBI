@@ -5,6 +5,7 @@ import csv
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from html import escape
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -15,8 +16,12 @@ from docx.oxml.ns import qn
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from pypdf import PdfReader
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+HIGHLIGHT_SOURCE_EXTENSIONS = {".pdf", ".docx"}
 DEFAULT_TABULAR_SECTION = "__tabular__"
 MAX_EXCEL_ROWS = 1_048_576
 STATUS_FILLS = {
@@ -523,6 +528,97 @@ def compare_text_files(file1: Path, file2: Path) -> ComparisonResult:
     )
 
 
+def _line_diff_segments(source: str, target: str) -> list[tuple[str, bool]]:
+    matcher = SequenceMatcher(a=source, b=target)
+    segments: list[tuple[str, bool]] = []
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag == "delete":
+            continue
+        chunk = target[j1:j2]
+        if not chunk:
+            continue
+        segments.append((chunk, tag != "equal"))
+    return segments
+
+
+def build_file2_highlight_lines(lines1: Sequence[str], lines2: Sequence[str]) -> list[list[tuple[str, bool]]]:
+    matcher = SequenceMatcher(a=lines1, b=lines2)
+    highlighted_lines: list[list[tuple[str, bool]]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for line in lines2[j1:j2]:
+                highlighted_lines.append([(line, False)])
+            continue
+        if tag == "insert":
+            for line in lines2[j1:j2]:
+                highlighted_lines.append([(line, True)])
+            continue
+
+        if tag == "delete":
+            continue
+
+        left = lines1[i1:i2]
+        right = lines2[j1:j2]
+        shared = min(len(left), len(right))
+        for index in range(shared):
+            highlighted_lines.append(_line_diff_segments(left[index], right[index]))
+        for line in right[shared:]:
+            highlighted_lines.append([(line, True)])
+    return highlighted_lines
+
+
+def _segments_to_pdf_markup(segments: Sequence[tuple[str, bool]]) -> str:
+    if not segments:
+        return "&nbsp;"
+
+    markup_parts: list[str] = []
+    for text, is_changed in segments:
+        escaped_text = escape(text).replace(" ", "&nbsp;")
+        if is_changed:
+            markup_parts.append(f'<font backColor="#FFF59D">{escaped_text}</font>')
+        else:
+            markup_parts.append(escaped_text)
+    combined = "".join(markup_parts)
+    return combined if combined else "&nbsp;"
+
+
+def write_highlight_pdf_for_file2(file1: Path, file2: Path, output_path: Path) -> Path:
+    if file2.suffix.lower() not in HIGHLIGHT_SOURCE_EXTENSIONS:
+        raise ComparisonError("La generazione PDF evidenziata è supportata solo per file2 .pdf o .docx.")
+
+    entries1 = read_text_entries(file1)
+    entries2 = read_text_entries(file2)
+    lines1 = [entry.text for entry in entries1]
+    lines2 = [entry.text for entry in entries2]
+    highlighted_lines = build_file2_highlight_lines(lines1, lines2)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document = SimpleDocTemplate(
+        str(output_path),
+        pagesize=A4,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=36,
+        bottomMargin=36,
+    )
+    styles = getSampleStyleSheet()
+    line_style = ParagraphStyle(
+        "DiffLine",
+        parent=styles["Normal"],
+        fontName="Courier",
+        fontSize=9,
+        leading=11,
+    )
+
+    story = [Paragraph(f"Confronto evidenziato basato su: {escape(file2.name)}", styles["Heading4"]), Spacer(1, 10)]
+    for segments in highlighted_lines:
+        story.append(Paragraph(_segments_to_pdf_markup(segments), line_style))
+        story.append(Spacer(1, 2))
+
+    document.build(story)
+    return output_path
+
+
 def auto_compare(file1: Path, file2: Path, key_spec: str | None = None) -> ComparisonResult:
     key_indexes = parse_key_spec(key_spec)
     both_tabular = file1.suffix.lower() in TABULAR_EXTENSIONS and file2.suffix.lower() in TABULAR_EXTENSIONS
@@ -666,10 +762,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result = auto_compare(args.file1, args.file2, args.key_spec)
         report_path = write_excel_report(result, args.output)
+        highlight_pdf_path: Path | None = None
+        if args.file2.suffix.lower() in HIGHLIGHT_SOURCE_EXTENSIONS:
+            highlight_pdf_path = args.output.with_name(f"{args.output.stem}_file2_highlight.pdf")
+            write_highlight_pdf_for_file2(args.file1, args.file2, highlight_pdf_path)
     except ComparisonError as exc:
         parser.error(str(exc))
 
     print(f"Report generato: {report_path}")
+    if highlight_pdf_path is not None:
+        print(f"PDF evidenziato generato: {highlight_pdf_path}")
     return 0
 
 
