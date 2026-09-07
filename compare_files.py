@@ -41,6 +41,7 @@ class ComparisonResult:
     mode: str
     differences: list[dict[str, str | int]]
     summary: dict[str, str | int]
+    sections: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -363,11 +364,13 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
         only_rows1 = next(iter(sections1.values()))
         only_rows2 = next(iter(sections2.values()))
         sections_to_compare = [(None, only_rows1, only_rows2)]
+        report_sections = None
     else:
-        section_names = sorted(set(sections1) | set(sections2))
+        section_names = list(dict.fromkeys([*sections1.keys(), *sections2.keys()]))
         sections_to_compare = [
             (name, sections1.get(name, []), sections2.get(name, [])) for name in section_names
         ]
+        report_sections = section_names
 
     differences: list[dict[str, str | int]] = []
     added = removed = changed = 0
@@ -454,6 +457,7 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
             "removed": removed,
             "changed": changed,
         },
+        sections=report_sections,
     )
 
 
@@ -700,7 +704,7 @@ def auto_compare(file1: Path, file2: Path, key_spec: str | None = None) -> Compa
 
 def build_details_table(result: ComparisonResult) -> tuple[list[str], list[list[str | int]]]:
     if result.mode == "tabular":
-        include_sheet = any("sheet" in difference for difference in result.differences)
+        include_sheet = bool(result.sections) or any("sheet" in difference for difference in result.differences)
         headers = ["Status", "Record Key", "Column", "File 1", "File 2"]
         if include_sheet:
             headers.insert(1, "Sheet")
@@ -745,6 +749,38 @@ def build_details_table(result: ComparisonResult) -> tuple[list[str], list[list[
     return headers, rows
 
 
+def _sanitize_excel_sheet_title(title: str, used_titles: set[str]) -> str:
+    cleaned = re.sub(r"[\[\]:*?/\\]", " ", title).strip() or "Sheet"
+    candidate = cleaned[:31]
+    if candidate not in used_titles:
+        return candidate
+
+    suffix_index = 2
+    while True:
+        suffix = f" ({suffix_index})"
+        candidate = f"{cleaned[: 31 - len(suffix)].rstrip()}{suffix}"
+        if candidate not in used_titles:
+            return candidate
+        suffix_index += 1
+
+
+def _format_detail_sheet(sheet) -> None:
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for row in sheet.iter_rows(min_row=2):
+        status = row[0].value
+        fill = STATUS_FILLS.get(status)
+        if fill:
+            for cell in row:
+                cell.fill = fill
+
+
+def _autosize_sheet(sheet) -> None:
+    for column_cells in sheet.columns:
+        length = max(len(str(cell.value or "")) for cell in column_cells)
+        sheet.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 60)
+
+
 def write_csv_report(result: ComparisonResult, output_path: Path) -> Path:
     csv_path = output_path.with_suffix(".csv")
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -774,25 +810,28 @@ def write_excel_report(result: ComparisonResult, output_path: Path) -> Path:
     for field, value in result.summary.items():
         summary_sheet.append([field, value])
     summary_sheet.freeze_panes = "A2"
+    _autosize_sheet(summary_sheet)
 
     details_sheet = workbook.create_sheet("Differences")
     details_sheet.append(headers)
     for row in detail_rows:
         details_sheet.append(row)
+    _format_detail_sheet(details_sheet)
+    _autosize_sheet(details_sheet)
 
-    details_sheet.freeze_panes = "A2"
-    details_sheet.auto_filter.ref = details_sheet.dimensions
-    for row in details_sheet.iter_rows(min_row=2):
-        status = row[0].value
-        fill = STATUS_FILLS.get(status)
-        if fill:
-            for cell in row:
-                cell.fill = fill
-
-    for sheet in (summary_sheet, details_sheet):
-        for column_cells in sheet.columns:
-            length = max(len(str(cell.value or "")) for cell in column_cells)
-            sheet.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 60)
+    if result.mode == "tabular" and result.sections:
+        used_titles = set(workbook.sheetnames)
+        include_sheet_column = len(headers) > 1 and headers[1] == "Sheet"
+        section_headers = headers[:1] + headers[2:] if include_sheet_column else headers
+        for section_name in result.sections:
+            section_sheet = workbook.create_sheet(_sanitize_excel_sheet_title(section_name, used_titles))
+            used_titles.add(section_sheet.title)
+            section_sheet.append(section_headers)
+            for row in detail_rows:
+                if include_sheet_column and len(row) > 1 and row[1] == section_name:
+                    section_sheet.append(row[:1] + row[2:])
+            _format_detail_sheet(section_sheet)
+            _autosize_sheet(section_sheet)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)

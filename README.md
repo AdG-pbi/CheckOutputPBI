@@ -37,6 +37,8 @@ Il file Excel prodotto contiene:
 - `Summary`: riepilogo del confronto
 - `Differences`: dettaglio delle differenze con evidenziazione colore
 
+Per confronti Excel multi-sheet, il report aggiunge anche un foglio dedicato per ogni foglio sorgente confrontato, così puoi verificare subito differenze e assenza di differenze per ciascun tab.
+
 Per confronti testuali, il dettaglio include anche la posizione del punto differente nei due file e due colonne di contesto con il testo immediatamente precedente e successivo. In questo modo, per input `.pdf` e `.docx` è più semplice individuare il passaggio corretto senza affidarsi solo al conteggio di righe o paragrafi.
 
 Quando nei `.pdf` o `.docx` vengono intercettate tabelle, la posizione riporta anche il titolo della tabella e le coordinate della cella (`riga` e `colonna`) dove è stata rilevata la differenza.
