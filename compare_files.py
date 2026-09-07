@@ -319,6 +319,61 @@ def read_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
     raise ComparisonError(f"Formato tabellare non supportato: {path.suffix}")
 
 
+def _normalize_section_key(section_name: object) -> str:
+    return str(section_name).strip()
+
+
+def _align_tabular_sections(
+    sections1: dict[str, list[list[str]]], sections2: dict[str, list[list[str]]]
+) -> tuple[list[tuple[str, list[list[str]], list[list[str]]]], list[str]]:
+    sections_to_compare: list[tuple[str, list[list[str]], list[list[str]]]] = []
+    report_sections: list[str] = []
+    matched1: set[str] = set()
+    matched2: set[str] = set()
+
+    normalized2: dict[str, list[str]] = {}
+    for section_name in sections2:
+        normalized2.setdefault(_normalize_section_key(section_name), []).append(section_name)
+
+    for section_name in sections1:
+        if section_name in matched1:
+            continue
+
+        matched_section_name2: str | None = None
+        display_name = section_name
+
+        if section_name in sections2 and section_name not in matched2:
+            matched_section_name2 = section_name
+        else:
+            matching_sections2 = [
+                candidate
+                for candidate in normalized2.get(_normalize_section_key(section_name), [])
+                if candidate not in matched2
+            ]
+            if len(matching_sections2) == 1:
+                matched_section_name2 = matching_sections2[0]
+                display_name = _normalize_section_key(section_name)
+
+        if matched_section_name2 is None:
+            sections_to_compare.append((section_name, sections1[section_name], []))
+            report_sections.append(section_name)
+            matched1.add(section_name)
+            continue
+
+        sections_to_compare.append((display_name, sections1[section_name], sections2[matched_section_name2]))
+        report_sections.append(display_name)
+        matched1.add(section_name)
+        matched2.add(matched_section_name2)
+
+    for section_name in sections2:
+        if section_name in matched2:
+            continue
+        sections_to_compare.append((section_name, [], sections2[section_name]))
+        report_sections.append(section_name)
+
+    return sections_to_compare, report_sections
+
+
 def split_header(rows1: list[list[str]], rows2: list[list[str]]) -> tuple[list[str], list[list[str]], list[list[str]]]:
     if rows1 and rows2 and len(rows1[0]) == len(rows2[0]) and rows1[0] == rows2[0]:
         header = [cell or f"Colonna {index + 1}" for index, cell in enumerate(rows1[0])]
@@ -366,11 +421,7 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
         sections_to_compare = [(None, only_rows1, only_rows2)]
         report_sections = None
     else:
-        section_names = list(dict.fromkeys([*sections1.keys(), *sections2.keys()]))
-        sections_to_compare = [
-            (name, sections1.get(name, []), sections2.get(name, [])) for name in section_names
-        ]
-        report_sections = section_names
+        sections_to_compare, report_sections = _align_tabular_sections(sections1, sections2)
 
     differences: list[dict[str, str | int]] = []
     added = removed = changed = 0
@@ -392,7 +443,13 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
         records_file1 += len(data1)
         records_file2 += len(data2)
 
-        for record_key in sorted(set(mapping1) | set(mapping2)):
+        record_keys = set(mapping1) | set(mapping2)
+        if key_indexes is None:
+            sorted_record_keys = sorted(record_keys, key=int)
+        else:
+            sorted_record_keys = sorted(record_keys)
+
+        for record_key in sorted_record_keys:
             row1 = mapping1.get(record_key)
             row2 = mapping2.get(record_key)
 
@@ -764,10 +821,6 @@ def _sanitize_excel_sheet_title(title: str, used_titles: set[str]) -> str:
         suffix_index += 1
 
 
-def _normalize_section_key(section_name: object) -> str:
-    return str(section_name).strip()
-
-
 def _format_detail_sheet(sheet) -> None:
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
@@ -827,21 +880,28 @@ def write_excel_report(result: ComparisonResult, output_path: Path) -> Path:
         used_titles = set(workbook.sheetnames)
         include_sheet_column = len(headers) > 1 and headers[1] == "Sheet"
         section_headers = headers[:1] + headers[2:] if include_sheet_column else headers
-        section_rows: dict[str, list[list[str | int]]] = {
-            _normalize_section_key(section): [] for section in result.sections
-        }
+        section_rows: dict[str, list[list[str | int]]] = {section: [] for section in result.sections}
         if include_sheet_column:
+            normalized_sections: dict[str, list[str]] = {}
+            for section_name in result.sections:
+                normalized_sections.setdefault(_normalize_section_key(section_name), []).append(section_name)
+
             for row in detail_rows:
                 if len(row) <= 1:
                     continue
-                section_key = _normalize_section_key(row[1])
-                if section_key in section_rows:
-                    section_rows[section_key].append(row[:1] + row[2:])
+                row_section = str(row[1])
+                if row_section in section_rows:
+                    section_rows[row_section].append(row[:1] + row[2:])
+                    continue
+
+                matching_sections = normalized_sections.get(_normalize_section_key(row_section), [])
+                if len(matching_sections) == 1:
+                    section_rows[matching_sections[0]].append(row[:1] + row[2:])
         for section_name in result.sections:
             section_sheet = workbook.create_sheet(_sanitize_excel_sheet_title(section_name, used_titles))
             used_titles.add(section_sheet.title)
             section_sheet.append(section_headers)
-            for row in section_rows.get(_normalize_section_key(section_name), []):
+            for row in section_rows.get(section_name, []):
                 section_sheet.append(row)
             _format_detail_sheet(section_sheet)
             _autosize_sheet(section_sheet)

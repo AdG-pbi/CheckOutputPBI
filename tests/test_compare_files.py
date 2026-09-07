@@ -626,6 +626,88 @@ class CompareFilesTests(unittest.TestCase):
 
             self.assertIn(("CHANGED", "1", "name", "Alice", "Alicia"), clienti_rows)
 
+    def test_compare_multi_sheet_xlsx_matches_sheet_names_with_outer_whitespace(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.xlsx"
+            right = tmp_path / "right.xlsx"
+            report = tmp_path / "report.xlsx"
+
+            wb1 = Workbook()
+            ws1 = wb1.active
+            ws1.title = "Clienti"
+            ws1.append(["id", "name"])
+            ws1.append([1, "Alice"])
+            ws2 = wb1.create_sheet("Ordini")
+            ws2.append(["id", "total"])
+            ws2.append([100, 50])
+            wb1.save(left)
+
+            wb2 = Workbook()
+            ws1_b = wb2.active
+            ws1_b.title = " Clienti "
+            ws1_b.append(["id", "name"])
+            ws1_b.append([1, "Alicia"])
+            ws2_b = wb2.create_sheet("Ordini")
+            ws2_b.append(["id", "total"])
+            ws2_b.append([100, 50])
+            wb2.save(right)
+
+            result = auto_compare(left, right, "1")
+            write_excel_report(result, report)
+
+            self.assertEqual(result.summary["changed"], 1)
+            self.assertEqual(result.summary["added"], 0)
+            self.assertEqual(result.summary["removed"], 0)
+
+            workbook = load_workbook(report)
+            rows = list(workbook["Differences"].iter_rows(values_only=True))
+            clienti_rows = list(workbook["Clienti"].iter_rows(values_only=True))
+            workbook.close()
+
+            self.assertIn(("CHANGED", "Clienti", "1", "name", "Alice", "Alicia"), rows)
+            self.assertNotIn(("REMOVED", "Clienti", "1", "name", "Alice", None), rows)
+            self.assertIn(("CHANGED", "1", "name", "Alice", "Alicia"), clienti_rows)
+
+    def test_multi_sheet_report_keeps_whitespace_distinct_sections_separate(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            report = Path(tmp_dir) / "report.xlsx"
+            result = ComparisonResult(
+                mode="tabular",
+                differences=[
+                    {
+                        "status": "CHANGED",
+                        "sheet": "Clienti",
+                        "record_key": "1",
+                        "column": "name",
+                        "file1": "Alice",
+                        "file2": "Alicia",
+                    },
+                    {
+                        "status": "CHANGED",
+                        "sheet": " Clienti ",
+                        "record_key": "2",
+                        "column": "name",
+                        "file1": "Bob",
+                        "file2": "Bobby",
+                    },
+                ],
+                summary={"changed": 2},
+                sections=["Clienti", " Clienti "],
+            )
+
+            write_excel_report(result, report)
+
+            workbook = load_workbook(report)
+            clienti_rows = list(workbook["Clienti"].iter_rows(values_only=True))
+            clienti_rows_2 = list(workbook["Clienti (2)"].iter_rows(values_only=True))
+            workbook.close()
+
+            self.assertIn(("CHANGED", "1", "name", "Alice", "Alicia"), clienti_rows)
+            self.assertNotIn(("CHANGED", "2", "name", "Bob", "Bobby"), clienti_rows)
+            self.assertIn(("CHANGED", "2", "name", "Bob", "Bobby"), clienti_rows_2)
+            self.assertNotIn(("CHANGED", "1", "name", "Alice", "Alicia"), clienti_rows_2)
+
     def test_read_xlsx_rows_includes_all_sheets(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
