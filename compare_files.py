@@ -100,14 +100,21 @@ def _normalize_cell(cell: object) -> str:
     return str(cell).strip()
 
 
-def read_xlsx_rows(path: Path) -> list[list[str]]:
-    workbook = load_workbook(path, read_only=True, data_only=True)
-    active_sheet = workbook.active
-    rows = []
-    for row in active_sheet.iter_rows(values_only=True):
-        rows.append([_normalize_cell(cell) for cell in row])
-    workbook.close()
+def _flatten_section_rows(sections: dict[str, list[list[str]]]) -> list[list[str]]:
+    if not sections:
+        return []
+
+    include_sheet_markers = len(sections) > 1
+    rows: list[list[str]] = []
+    for sheet_name, section_rows in sections.items():
+        if include_sheet_markers:
+            rows.append([f"[{sheet_name}]"])
+        rows.extend(section_rows)
     return rows
+
+
+def read_xlsx_rows(path: Path) -> list[list[str]]:
+    return _flatten_section_rows(read_xlsx_sections(path))
 
 
 def read_xlsx_sections(path: Path) -> dict[str, list[list[str]]]:
@@ -299,10 +306,7 @@ def read_text_entries(path: Path) -> list[TextEntry]:
 
 
 def read_tabular_rows(path: Path) -> list[list[str]]:
-    sections = read_tabular_sections(path)
-    if not sections:
-        return []
-    return next(iter(sections.values()))
+    return _flatten_section_rows(read_tabular_sections(path))
 
 
 def read_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
