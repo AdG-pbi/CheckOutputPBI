@@ -21,7 +21,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph as RLParagraph, SimpleDocTemplate, Spacer
 
 try:
-    import fitz
+    import pymupdf as fitz
 except ImportError:  # pragma: no cover - handled at runtime when PDF highlight is requested
     fitz = None
 
