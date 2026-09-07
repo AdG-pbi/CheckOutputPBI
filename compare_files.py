@@ -823,13 +823,20 @@ def write_excel_report(result: ComparisonResult, output_path: Path) -> Path:
         used_titles = set(workbook.sheetnames)
         include_sheet_column = len(headers) > 1 and headers[1] == "Sheet"
         section_headers = headers[:1] + headers[2:] if include_sheet_column else headers
+        section_rows: dict[str, list[list[str | int]]] = {str(section): [] for section in result.sections}
+        if include_sheet_column:
+            for row in detail_rows:
+                if len(row) <= 1:
+                    continue
+                section_key = str(row[1]).strip()
+                if section_key in section_rows:
+                    section_rows[section_key].append(row[:1] + row[2:])
         for section_name in result.sections:
             section_sheet = workbook.create_sheet(_sanitize_excel_sheet_title(section_name, used_titles))
             used_titles.add(section_sheet.title)
             section_sheet.append(section_headers)
-            for row in detail_rows:
-                if include_sheet_column and len(row) > 1 and row[1] == section_name:
-                    section_sheet.append(row[:1] + row[2:])
+            for row in section_rows.get(str(section_name).strip(), []):
+                section_sheet.append(row)
             _format_detail_sheet(section_sheet)
             _autosize_sheet(section_sheet)
 
