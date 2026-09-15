@@ -1260,10 +1260,10 @@ def write_highlight_pdf_for_file2(file1: Path, file2: Path, output_path: Path) -
 def auto_compare(file1: Path, file2: Path, key_spec: str | Sequence[str] | None = None) -> ComparisonResult:
     key_config = parse_key_arguments(key_spec)
     both_tabular = file1.suffix.lower() in TABULAR_EXTENSIONS and file2.suffix.lower() in TABULAR_EXTENSIONS
-    both_pdf = file1.suffix.lower() == ".pdf" and file2.suffix.lower() == ".pdf"
-    if both_tabular:
-        return compare_tabular_files(file1, file2, key_config)
-    if both_pdf and key_config.has_keys():
+    tabular_mode = both_tabular or (
+        file1.suffix.lower() == ".pdf" and file2.suffix.lower() == ".pdf" and key_config.has_keys()
+    )
+    if tabular_mode:
         return compare_tabular_files(file1, file2, key_config)
     if key_config.has_keys():
         raise ComparisonError("Il parametro --key è disponibile solo per confronti tabellari CSV/XLSX o PDF tabellari.")
