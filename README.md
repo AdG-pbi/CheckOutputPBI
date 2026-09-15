@@ -4,7 +4,7 @@ Strumento CLI per confrontare due file e generare un report Excel con le differe
 
 ## Formati supportati
 
-- tabellari: `csv`, `xlsx`, `xlsm`
+- tabellari: `csv`, `xlsx`, `xlsm` (e `.pdf` quando usi `--key` e viene riconosciuta una tabella)
 - testuali/documentali: `txt`, `pdf`, `docx`
 - altri file testuali leggibili come UTF-8
 
@@ -29,6 +29,8 @@ Per i file tabellari puoi passare una chiave record composta da più campi usand
 ```bash
 python compare_files.py prima.csv seconda.csv -k 1+5 -o differenze.xlsx
 ```
+
+Lo stesso parametro `--key` è disponibile anche per confronti `.pdf` quando il parser riesce a riconoscere una struttura tabellare nel contenuto estratto.
 
 Nei file Excel (`.xlsx`/`.xlsm`) vengono considerati anche workbook con più fogli: il confronto viene eseguito per nome foglio.
 

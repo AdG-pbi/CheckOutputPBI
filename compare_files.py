@@ -377,17 +377,22 @@ def _extract_table_cells(line: str) -> list[str] | None:
     return cells
 
 
+def _extract_pdf_page_text(page, *, fallback_to_plain_text: bool = True) -> str:
+    try:
+        text = page.extract_text(extraction_mode="layout") or ""
+    except TypeError:
+        return page.extract_text() or ""
+    if text or not fallback_to_plain_text:
+        return text
+    return page.extract_text() or ""
+
+
 def read_pdf_entries(path: Path) -> list[TextEntry]:
     reader = PdfReader(str(path))
     entries: list[TextEntry] = []
     table_index = 0
     for page_number, page in enumerate(reader.pages, start=1):
-        try:
-            text = page.extract_text(extraction_mode="layout") or ""
-        except TypeError:
-            text = page.extract_text() or ""
-        if not text:
-            text = page.extract_text() or ""
+        text = _extract_pdf_page_text(page)
         active_table_row = 0
         active_table_title = ""
         previous_plain_line = ""
@@ -422,6 +427,49 @@ def read_pdf_entries(path: Path) -> list[TextEntry]:
             )
             previous_plain_line = stripped_line
     return entries
+
+
+def read_pdf_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
+    reader = PdfReader(str(path))
+    sections: dict[str, list[list[str]]] = {}
+    table_index = 0
+    active_section_name: str | None = None
+    previous_plain_line = ""
+    for page in reader.pages:
+        text = _extract_pdf_page_text(page)
+        saw_table_row_on_page = False
+        reading_page_leading_text = True
+        for line in text.splitlines():
+            stripped_line = line.strip()
+            if not stripped_line:
+                continue
+
+            cells = _extract_table_cells(stripped_line)
+            if cells is not None:
+                if active_section_name is None:
+                    table_index += 1
+                    base_name = previous_plain_line or f"Tabella {table_index}"
+                    section_name = base_name
+                    duplicate_index = 2
+                    while section_name in sections:
+                        section_name = f"{base_name} ({duplicate_index})"
+                        duplicate_index += 1
+                    active_section_name = section_name
+                    sections[active_section_name] = []
+                sections[active_section_name].append(cells)
+                saw_table_row_on_page = True
+                reading_page_leading_text = False
+                continue
+
+            if not saw_table_row_on_page and reading_page_leading_text and active_section_name is not None:
+                continue
+
+            active_section_name = None
+            reading_page_leading_text = False
+            previous_plain_line = stripped_line
+        if not saw_table_row_on_page:
+            active_section_name = None
+    return sections
 
 
 def read_doc_lines(path: Path) -> list[str]:
@@ -476,6 +524,11 @@ def read_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
         return {DEFAULT_TABULAR_SECTION: read_csv_rows(path)}
     if extension in {".xlsx", ".xlsm"}:
         return read_xlsx_sections(path)
+    if extension == ".pdf":
+        sections = read_pdf_tabular_sections(path)
+        if not sections:
+            raise ComparisonError("Nessuna tabella rilevata nel PDF per usare il confronto tabellare.")
+        return sections
     raise ComparisonError(f"Formato tabellare non supportato: {path.suffix}")
 
 
@@ -1216,10 +1269,13 @@ def write_highlight_pdf_for_file2(file1: Path, file2: Path, output_path: Path) -
 def auto_compare(file1: Path, file2: Path, key_spec: str | Sequence[str] | None = None) -> ComparisonResult:
     key_config = parse_key_arguments(key_spec)
     both_tabular = file1.suffix.lower() in TABULAR_EXTENSIONS and file2.suffix.lower() in TABULAR_EXTENSIONS
-    if both_tabular:
+    tabular_mode = both_tabular or (
+        file1.suffix.lower() == ".pdf" and file2.suffix.lower() == ".pdf" and key_config.has_keys()
+    )
+    if tabular_mode:
         return compare_tabular_files(file1, file2, key_config)
     if key_config.has_keys():
-        raise ComparisonError("Il parametro --key è disponibile solo per confronti tabellari CSV/XLSX.")
+        raise ComparisonError("Il parametro --key è disponibile solo per confronti tabellari CSV/XLSX o PDF tabellari.")
     return compare_text_files(file1, file2)
 
 
@@ -1393,7 +1449,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--key",
         dest="key_spec",
         action="append",
-        help="Chiave record per confronti tabellari: 1+5 come default oppure N:1+5 per uno sheet specifico",
+        help="Chiave record per confronti tabellari (CSV/XLSX o PDF tabellari): 1+5 come default oppure N:1+5 per uno sheet specifico",
     )
     return parser
 
