@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import statistics
+import sys
 import tempfile
 from pathlib import Path
 from time import perf_counter
 
 import pymupdf as fitz
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from compare_files import auto_compare, write_highlight_pdf_for_file2
 
