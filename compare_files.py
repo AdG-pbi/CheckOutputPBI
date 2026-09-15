@@ -437,6 +437,8 @@ def read_pdf_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
     previous_plain_line = ""
     for page in reader.pages:
         text = _extract_pdf_page_text(page)
+        saw_table_row_on_page = False
+        reading_page_leading_text = True
         for line in text.splitlines():
             stripped_line = line.strip()
             if not stripped_line:
@@ -455,10 +457,19 @@ def read_pdf_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
                     active_section_name = section_name
                     sections[active_section_name] = []
                 sections[active_section_name].append(cells)
+                saw_table_row_on_page = True
+                reading_page_leading_text = False
+                continue
+
+            if not saw_table_row_on_page and reading_page_leading_text and active_section_name is not None:
+                previous_plain_line = stripped_line
                 continue
 
             active_section_name = None
+            reading_page_leading_text = False
             previous_plain_line = stripped_line
+        if not saw_table_row_on_page:
+            active_section_name = None
     return sections
 
 
