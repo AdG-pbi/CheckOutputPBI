@@ -30,6 +30,8 @@ Per i file tabellari puoi passare una chiave record composta da più campi usand
 python compare_files.py prima.csv seconda.csv -k 1+5 -o differenze.xlsx
 ```
 
+Lo stesso parametro `--key` è disponibile anche per confronti `.pdf` quando il parser riesce a riconoscere una struttura tabellare nel contenuto estratto.
+
 Nei file Excel (`.xlsx`/`.xlsm`) vengono considerati anche workbook con più fogli: il confronto viene eseguito per nome foglio.
 
 Per workbook multi-sheet puoi anche ripetere `--key` e associare una chiave a uno sheet specifico indicando il suo numero 1-based:
