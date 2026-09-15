@@ -462,7 +462,6 @@ def read_pdf_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
                 continue
 
             if not saw_table_row_on_page and reading_page_leading_text and active_section_name is not None:
-                previous_plain_line = stripped_line
                 continue
 
             active_section_name = None
