@@ -377,17 +377,22 @@ def _extract_table_cells(line: str) -> list[str] | None:
     return cells
 
 
+def _extract_pdf_page_text(page, *, fallback_to_plain_text: bool = True) -> str:
+    try:
+        text = page.extract_text(extraction_mode="layout") or ""
+    except TypeError:
+        text = ""
+    if text or not fallback_to_plain_text:
+        return text
+    return page.extract_text() or ""
+
+
 def read_pdf_entries(path: Path) -> list[TextEntry]:
     reader = PdfReader(str(path))
     entries: list[TextEntry] = []
     table_index = 0
     for page_number, page in enumerate(reader.pages, start=1):
-        try:
-            text = page.extract_text(extraction_mode="layout") or ""
-        except TypeError:
-            text = page.extract_text() or ""
-        if not text:
-            text = page.extract_text() or ""
+        text = _extract_pdf_page_text(page)
         active_table_row = 0
         active_table_title = ""
         previous_plain_line = ""
@@ -429,12 +434,7 @@ def read_pdf_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
     sections: dict[str, list[list[str]]] = {}
     table_index = 0
     for page in reader.pages:
-        try:
-            text = page.extract_text(extraction_mode="layout") or ""
-        except TypeError:
-            text = page.extract_text() or ""
-        if not text:
-            text = page.extract_text() or ""
+        text = _extract_pdf_page_text(page, fallback_to_plain_text=False)
 
         active_section_name: str | None = None
         previous_plain_line = ""
