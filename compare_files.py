@@ -57,6 +57,45 @@ class ComparisonResult:
 
 
 @dataclass(frozen=True)
+class KeyConfig:
+    default_key_indexes: tuple[int, ...] | None = None
+    sheet_key_indexes: dict[int, tuple[int, ...]] | None = None
+
+    def has_keys(self) -> bool:
+        return self.default_key_indexes is not None or bool(self.sheet_key_indexes)
+
+    def key_for_sheet(self, sheet_number: int) -> tuple[int, ...] | None:
+        if self.sheet_key_indexes and sheet_number in self.sheet_key_indexes:
+            return self.sheet_key_indexes[sheet_number]
+        return self.default_key_indexes
+
+    def validate_sheet_numbers(self, total_sheets: int) -> None:
+        invalid_sheet_numbers = sorted(
+            sheet_number
+            for sheet_number in (self.sheet_key_indexes or {})
+            if sheet_number > total_sheets
+        )
+        if invalid_sheet_numbers:
+            references = ", ".join(str(sheet_number) for sheet_number in invalid_sheet_numbers)
+            raise ComparisonError(
+                f"La chiave fa riferimento a sheet non presenti nel confronto: {references}."
+            )
+
+    def summary_value(self) -> str:
+        if not self.has_keys():
+            return "auto-riga"
+
+        summary_parts: list[str] = []
+        if self.default_key_indexes is not None:
+            summary_parts.append("+".join(str(index + 1) for index in self.default_key_indexes))
+        for sheet_number, key_indexes in sorted((self.sheet_key_indexes or {}).items()):
+            summary_parts.append(
+                f"sheet {sheet_number}: {'+'.join(str(index + 1) for index in key_indexes)}"
+            )
+        return "; ".join(summary_parts)
+
+
+@dataclass(frozen=True)
 class TextEntry:
     text: str
     location: str
@@ -114,6 +153,45 @@ def parse_key_spec(key_spec: str | None) -> tuple[int, ...] | None:
             raise ComparisonError("Gli indici della chiave devono partire da 1.")
         indexes.append(index - 1)
     return tuple(indexes)
+
+
+def parse_key_arguments(key_specs: str | Sequence[str] | None) -> KeyConfig:
+    if key_specs is None:
+        return KeyConfig()
+
+    if isinstance(key_specs, str):
+        raw_specs = [key_specs]
+    else:
+        raw_specs = list(key_specs)
+
+    default_key_indexes: tuple[int, ...] | None = None
+    sheet_key_indexes: dict[int, tuple[int, ...]] = {}
+
+    for raw_spec in raw_specs:
+        key_spec = raw_spec.strip()
+        if not key_spec:
+            continue
+        if ":" not in key_spec:
+            if default_key_indexes is not None:
+                raise ComparisonError(
+                    "Specifica --key duplicata senza numero sheet; usa il formato N:1+5 per i fogli specifici."
+                )
+            default_key_indexes = parse_key_spec(key_spec)
+            continue
+
+        sheet_number_raw, scoped_key_spec = key_spec.split(":", 1)
+        sheet_number_raw = sheet_number_raw.strip()
+        if not sheet_number_raw.isdigit() or int(sheet_number_raw) <= 0:
+            raise ComparisonError(
+                "Il numero di sheet nel parametro --key deve essere un intero positivo."
+            )
+
+        sheet_number = int(sheet_number_raw)
+        if sheet_number in sheet_key_indexes:
+            raise ComparisonError(f"Chiave duplicata trovata per lo sheet {sheet_number}.")
+        sheet_key_indexes[sheet_number] = parse_key_spec(scoped_key_spec)
+
+    return KeyConfig(default_key_indexes=default_key_indexes, sheet_key_indexes=sheet_key_indexes)
 
 
 def read_csv_rows(path: Path) -> list[list[str]]:
@@ -492,7 +570,7 @@ def rows_to_mapping(rows: list[list[str]], key_indexes: tuple[int, ...] | None, 
     return mapping
 
 
-def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...] | None) -> ComparisonResult:
+def compare_tabular_files(file1: Path, file2: Path, key_config: KeyConfig) -> ComparisonResult:
     sections1 = read_tabular_sections(file1)
     sections2 = read_tabular_sections(file2)
     compare_single_section = len(sections1) == 1 and len(sections2) == 1
@@ -505,11 +583,13 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
     else:
         sections_to_compare, report_sections = _align_tabular_sections(sections1, sections2)
 
+    key_config.validate_sheet_numbers(len(sections_to_compare))
     differences: list[dict[str, str | int]] = []
     added = removed = changed = 0
     records_file1 = records_file2 = 0
 
-    for section_name, rows1, rows2 in sections_to_compare:
+    for section_number, (section_name, rows1, rows2) in enumerate(sections_to_compare, start=1):
+        key_indexes = key_config.key_for_sheet(section_number)
         if rows1 and not rows2:
             header = [cell or f"Colonna {index + 1}" for index, cell in enumerate(rows1[0])]
             data1, data2 = rows1[1:], []
@@ -589,7 +669,7 @@ def compare_tabular_files(file1: Path, file2: Path, key_indexes: tuple[int, ...]
         summary={
             "file1": str(file1),
             "file2": str(file2),
-            "key": "auto-riga" if key_indexes is None else "+".join(str(index + 1) for index in key_indexes),
+            "key": key_config.summary_value(),
             "records_file1": records_file1,
             "records_file2": records_file2,
             "added": added,
@@ -1133,12 +1213,12 @@ def write_highlight_pdf_for_file2(file1: Path, file2: Path, output_path: Path) -
     return output_path
 
 
-def auto_compare(file1: Path, file2: Path, key_spec: str | None = None) -> ComparisonResult:
-    key_indexes = parse_key_spec(key_spec)
+def auto_compare(file1: Path, file2: Path, key_spec: str | Sequence[str] | None = None) -> ComparisonResult:
+    key_config = parse_key_arguments(key_spec)
     both_tabular = file1.suffix.lower() in TABULAR_EXTENSIONS and file2.suffix.lower() in TABULAR_EXTENSIONS
     if both_tabular:
-        return compare_tabular_files(file1, file2, key_indexes)
-    if key_indexes is not None:
+        return compare_tabular_files(file1, file2, key_config)
+    if key_config.has_keys():
         raise ComparisonError("Il parametro --key è disponibile solo per confronti tabellari CSV/XLSX.")
     return compare_text_files(file1, file2)
 
@@ -1312,7 +1392,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-k",
         "--key",
         dest="key_spec",
-        help="Chiave record per confronti tabellari, nel formato 1+5",
+        action="append",
+        help="Chiave record per confronti tabellari: 1+5 come default oppure N:1+5 per uno sheet specifico",
     )
     return parser
 
