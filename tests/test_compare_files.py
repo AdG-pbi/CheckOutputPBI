@@ -761,7 +761,7 @@ class CompareFilesTests(unittest.TestCase):
             ws2_b = wb2.create_sheet("Ordini")
             ws2_b.append(["date", "order_id", "total"])
             ws2_b.append(["2024-02-01", "A001", 60])
-            ws2_b.append(["2024-03-01", "B002", 20])
+            ws2_b.append(["2024-01-01", "B002", 20])
             wb2.save(right)
 
             result = auto_compare(left, right, ["1:1", "2:2"])
