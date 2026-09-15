@@ -30,6 +30,10 @@ HIGHLIGHT_SOURCE_EXTENSIONS = {".pdf", ".docx"}
 DEFAULT_TABULAR_SECTION = "__tabular__"
 MAX_EXCEL_ROWS = 1_048_576
 EMPTY_XLSX_SCAN_LIMIT = 100
+VISUAL_DIFF_RENDER_DPI = 96
+VISUAL_DIFF_BLOCK_SIZE = 4
+VISUAL_DIFF_PIXEL_THRESHOLD = 32
+VISUAL_DIFF_MIN_PIXELS_PER_BLOCK = 2
 STATUS_FILLS = {
     "ADDED": PatternFill(fill_type="solid", fgColor="C6EFCE"),
     "REMOVED": PatternFill(fill_type="solid", fgColor="FFC7CE"),
@@ -721,11 +725,172 @@ def _extract_pdf_visual_lines(path: Path) -> list[tuple[int, str, str]]:
     return entries
 
 
+def _build_full_page_rect(page) -> tuple[float, float, float, float]:
+    rect = getattr(page, "rect", None)
+    if rect is None:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (0.0, 0.0, float(rect.width), float(rect.height))
+
+
+def _block_has_visual_difference(
+    left_samples: bytes,
+    right_samples: bytes,
+    width: int,
+    channels: int,
+    x_start: int,
+    x_end: int,
+    y_start: int,
+    y_end: int,
+) -> bool:
+    comparable_channels = 1 if channels == 1 else min(channels, 3)
+    changed_pixels = 0
+    for y in range(y_start, y_end):
+        pixel_offset = (y * width + x_start) * channels
+        for _x in range(x_start, x_end):
+            delta = 0
+            for channel in range(comparable_channels):
+                delta += abs(left_samples[pixel_offset + channel] - right_samples[pixel_offset + channel])
+            if delta / comparable_channels >= VISUAL_DIFF_PIXEL_THRESHOLD:
+                changed_pixels += 1
+                if changed_pixels >= VISUAL_DIFF_MIN_PIXELS_PER_BLOCK:
+                    return True
+            pixel_offset += channels
+    return False
+
+
+def _merge_changed_blocks_into_rectangles(
+    changed_blocks: list[list[bool]],
+    block_size: int,
+    page_width: float,
+    page_height: float,
+    pixel_width: int,
+    pixel_height: int,
+) -> list[tuple[float, float, float, float]]:
+    if not changed_blocks:
+        return []
+
+    block_rows = len(changed_blocks)
+    block_columns = len(changed_blocks[0])
+    visited = [[False] * block_columns for _ in range(block_rows)]
+    rectangles: list[tuple[float, float, float, float]] = []
+    scale_x = page_width / pixel_width if pixel_width else 1.0
+    scale_y = page_height / pixel_height if pixel_height else 1.0
+
+    for row in range(block_rows):
+        for column in range(block_columns):
+            if not changed_blocks[row][column] or visited[row][column]:
+                continue
+
+            stack = [(row, column)]
+            visited[row][column] = True
+            min_row = max_row = row
+            min_column = max_column = column
+
+            while stack:
+                current_row, current_column = stack.pop()
+                min_row = min(min_row, current_row)
+                max_row = max(max_row, current_row)
+                min_column = min(min_column, current_column)
+                max_column = max(max_column, current_column)
+
+                for delta_row, delta_column in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    next_row = current_row + delta_row
+                    next_column = current_column + delta_column
+                    if not (0 <= next_row < block_rows and 0 <= next_column < block_columns):
+                        continue
+                    if visited[next_row][next_column] or not changed_blocks[next_row][next_column]:
+                        continue
+                    visited[next_row][next_column] = True
+                    stack.append((next_row, next_column))
+
+            x0 = min_column * block_size * scale_x
+            y0 = min_row * block_size * scale_y
+            x1 = min(pixel_width, (max_column + 1) * block_size) * scale_x
+            y1 = min(pixel_height, (max_row + 1) * block_size) * scale_y
+            rectangles.append((x0, y0, x1, y1))
+
+    return rectangles
+
+
+def _build_visual_diff_rectangles_for_page(left_page, right_page) -> list[tuple[float, float, float, float]]:
+    left_pixmap = left_page.get_pixmap(dpi=VISUAL_DIFF_RENDER_DPI, alpha=False)
+    right_pixmap = right_page.get_pixmap(dpi=VISUAL_DIFF_RENDER_DPI, alpha=False)
+    if (
+        left_pixmap.width != right_pixmap.width
+        or left_pixmap.height != right_pixmap.height
+        or left_pixmap.n != right_pixmap.n
+    ):
+        return [_build_full_page_rect(right_page)]
+
+    block_size = VISUAL_DIFF_BLOCK_SIZE
+    block_rows = (right_pixmap.height + block_size - 1) // block_size
+    block_columns = (right_pixmap.width + block_size - 1) // block_size
+    changed_blocks = [[False] * block_columns for _ in range(block_rows)]
+
+    for row in range(block_rows):
+        y_start = row * block_size
+        y_end = min(right_pixmap.height, y_start + block_size)
+        for column in range(block_columns):
+            x_start = column * block_size
+            x_end = min(right_pixmap.width, x_start + block_size)
+            changed_blocks[row][column] = _block_has_visual_difference(
+                left_pixmap.samples,
+                right_pixmap.samples,
+                right_pixmap.width,
+                right_pixmap.n,
+                x_start,
+                x_end,
+                y_start,
+                y_end,
+            )
+
+    page_rect = getattr(right_page, "rect", None)
+    page_width = float(page_rect.width) if page_rect is not None else float(right_pixmap.width)
+    page_height = float(page_rect.height) if page_rect is not None else float(right_pixmap.height)
+    return _merge_changed_blocks_into_rectangles(
+        changed_blocks,
+        block_size,
+        page_width,
+        page_height,
+        right_pixmap.width,
+        right_pixmap.height,
+    )
+
+
+def _collect_pdf_visual_diff_rectangles(file1: Path, file2: Path) -> dict[int, list[tuple[float, float, float, float]]]:
+    rectangles_by_page: dict[int, list[tuple[float, float, float, float]]] = {}
+    with fitz.open(file1) as left_document, fitz.open(file2) as right_document:
+        left_pages = list(left_document)
+        right_pages = list(right_document)
+
+        for page_index, right_page in enumerate(right_pages):
+            if page_index >= len(left_pages):
+                rectangles_by_page[page_index] = [_build_full_page_rect(right_page)]
+                continue
+
+            rectangles = _build_visual_diff_rectangles_for_page(left_pages[page_index], right_page)
+            if rectangles:
+                rectangles_by_page[page_index] = rectangles
+
+    return rectangles_by_page
+
+
+def _style_visual_diff_annotation(annotation) -> None:
+    if hasattr(annotation, "set_colors"):
+        annotation.set_colors(stroke=(1, 0, 0))
+    if hasattr(annotation, "set_border"):
+        annotation.set_border(width=1)
+    if hasattr(annotation, "update"):
+        annotation.update(opacity=0.35)
+
+
 def _write_layout_preserving_highlight_pdf(file1: Path, file2: Path, output_path: Path) -> Path:
     file2_lines = _extract_pdf_visual_lines(file2)
     lines2_for_diff = [normalized for _, _, normalized in file2_lines]
+    visual_diff_rectangles: dict[int, list[tuple[float, float, float, float]]] = {}
     if file1.suffix.lower() == ".pdf":
         lines1_for_diff = [normalized for _, _, normalized in _extract_pdf_visual_lines(file1)]
+        visual_diff_rectangles = _collect_pdf_visual_diff_rectangles(file1, file2)
     else:
         lines1_for_diff = read_text_lines(file1)
     changed_flags = _build_changed_line_flags(lines1_for_diff, lines2_for_diff)
@@ -744,6 +909,13 @@ def _write_layout_preserving_highlight_pdf(file1: Path, file2: Path, output_path
             rect = matches[occurrence_index] if occurrence_index < len(matches) else matches[-1]
             page.add_highlight_annot(rect)
             used_occurrences[key] = occurrence_index + 1
+        for page_index, rectangles in visual_diff_rectangles.items():
+            if not rectangles:
+                continue
+            page = document[page_index]
+            for rect in rectangles:
+                annotation = page.add_rect_annot(rect)
+                _style_visual_diff_annotation(annotation)
         document.save(output_path)
     return output_path
 

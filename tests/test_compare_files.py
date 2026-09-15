@@ -160,9 +160,14 @@ class CompareFilesTests(unittest.TestCase):
                 def __init__(self, text):
                     self._text = text
                     self.highlights = []
+                    self.rectangles = []
+                    self.rect = type("Rect", (), {"width": 40, "height": 40})()
 
                 def get_text(self, _mode):
                     return self._text
+
+                def get_pixmap(self, **_kwargs):
+                    return type("Pixmap", (), {"width": 4, "height": 4, "n": 1, "samples": bytes([255] * 16)})()
 
                 def search_for(self, text):
                     if text in self._text:
@@ -172,6 +177,18 @@ class CompareFilesTests(unittest.TestCase):
                 def add_highlight_annot(self, rect):
                     self.highlights.append(rect)
                     return rect
+
+                def add_rect_annot(self, rect):
+                    self.rectangles.append(rect)
+                    return type(
+                        "Annot",
+                        (),
+                        {
+                            "set_colors": lambda *args, **kwargs: None,
+                            "set_border": lambda *args, **kwargs: None,
+                            "update": lambda *args, **kwargs: None,
+                        },
+                    )()
 
             class FakeDocument:
                 def __init__(self, pages, source_path):
@@ -213,6 +230,96 @@ class CompareFilesTests(unittest.TestCase):
             self.assertTrue(output_pdf.exists())
             self.assertEqual(output_pdf.read_bytes(), right.read_bytes())
             self.assertEqual(right_page.highlights, ["rect::Riga B"])
+            self.assertEqual(right_page.rectangles, [])
+
+    def test_write_highlight_pdf_for_pdf_file2_adds_visual_rectangles_for_image_only_differences(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.pdf"
+            right = tmp_path / "right.pdf"
+            output_pdf = tmp_path / "highlighted.pdf"
+            left.write_bytes(b"%PDF-1.7")
+            right.write_bytes(b"%PDF-1.7")
+
+            class FakePage:
+                def __init__(self, text, samples):
+                    self._text = text
+                    self._samples = samples
+                    self.highlights = []
+                    self.rectangles = []
+                    self.rect = type("Rect", (), {"width": 80, "height": 80})()
+
+                def get_text(self, _mode):
+                    return self._text
+
+                def get_pixmap(self, **_kwargs):
+                    return type("Pixmap", (), {"width": 8, "height": 8, "n": 1, "samples": self._samples})()
+
+                def search_for(self, _text):
+                    return []
+
+                def add_highlight_annot(self, rect):
+                    self.highlights.append(rect)
+                    return rect
+
+                def add_rect_annot(self, rect):
+                    self.rectangles.append(rect)
+                    return type(
+                        "Annot",
+                        (),
+                        {
+                            "set_colors": lambda *args, **kwargs: None,
+                            "set_border": lambda *args, **kwargs: None,
+                            "update": lambda *args, **kwargs: None,
+                        },
+                    )()
+
+            class FakeDocument:
+                def __init__(self, pages, source_path):
+                    self.pages = pages
+                    self.source_path = source_path
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def __iter__(self):
+                    return iter(self.pages)
+
+                def __getitem__(self, index):
+                    return self.pages[index]
+
+                def save(self, destination):
+                    Path(destination).write_bytes(self.source_path.read_bytes())
+
+            left_page = FakePage("Grafico invariato", bytes([255] * 64))
+            right_sample_values = [255] * 64
+            for index in (54, 55, 62, 63):
+                right_sample_values[index] = 0
+            right_samples = bytes(right_sample_values)
+            right_page = FakePage("Grafico invariato", right_samples)
+            left_document = FakeDocument([left_page], left)
+            right_document = FakeDocument([right_page], right)
+
+            def fake_open(path):
+                path = Path(path)
+                if path == left:
+                    return left_document
+                if path == right:
+                    return right_document
+                self.fail(f"Unexpected path passed to fitz.open: {path}")
+
+            with patch("compare_files.fitz") as mock_fitz:
+                mock_fitz.open.side_effect = fake_open
+                actual_path = write_highlight_pdf_for_file2(left, right, output_pdf)
+
+            self.assertEqual(actual_path, output_pdf)
+            self.assertTrue(output_pdf.exists())
+            self.assertEqual(output_pdf.read_bytes(), right.read_bytes())
+            self.assertEqual(right_page.highlights, [])
+            self.assertEqual(right_page.rectangles, [(40.0, 40.0, 80.0, 80.0)])
 
     def test_compare_pdf_files_exposes_page_and_line_locations(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
