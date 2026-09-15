@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from html import escape
@@ -24,6 +27,10 @@ try:
     import pymupdf as fitz
 except ImportError:  # pragma: no cover - handled at runtime when PDF highlight is requested
     fitz = None
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - fallback keeps logic unchanged when numpy is unavailable
+    np = None
 
 TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
 HIGHLIGHT_SOURCE_EXTENSIONS = {".pdf", ".docx"}
@@ -57,6 +64,22 @@ class TextEntry:
 
 class ComparisonError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class VisualDiffPageData:
+    page_index: int
+    page_width: float
+    page_height: float
+    left_width: int | None = None
+    left_height: int | None = None
+    left_channels: int | None = None
+    left_samples: bytes | None = None
+    right_width: int | None = None
+    right_height: int | None = None
+    right_channels: int | None = None
+    right_samples: bytes | None = None
+    full_page_only: bool = False
 
 
 def _shorten_text(text: str, max_length: int = 60) -> str:
@@ -714,14 +737,18 @@ def _extract_pdf_visual_lines(path: Path) -> list[tuple[int, str, str]]:
             "per generare il PDF evidenziato mantenendo il layout originale."
         )
 
-    entries: list[tuple[int, str, str]] = []
     with fitz.open(path) as document:
-        for page_index, page in enumerate(document):
-            for line in page.get_text("text").splitlines():
-                normalized = line.strip()
-                if not normalized:
-                    continue
-                entries.append((page_index, line, normalized))
+        return _extract_pdf_visual_lines_from_document(document)
+
+
+def _extract_pdf_visual_lines_from_document(document) -> list[tuple[int, str, str]]:
+    entries: list[tuple[int, str, str]] = []
+    for page_index, page in enumerate(document):
+        for line in page.get_text("text").splitlines():
+            normalized = line.strip()
+            if not normalized:
+                continue
+            entries.append((page_index, line, normalized))
     return entries
 
 
@@ -756,6 +783,67 @@ def _block_has_visual_difference(
                     return True
             pixel_offset += channels
     return False
+
+
+def _build_changed_blocks_with_numpy(
+    left_samples: bytes,
+    right_samples: bytes,
+    width: int,
+    height: int,
+    channels: int,
+    block_size: int,
+) -> list[list[bool]]:
+    comparable_channels = 1 if channels == 1 else min(channels, 3)
+    left_array = np.frombuffer(left_samples, dtype=np.uint8).reshape(height, width, channels)
+    right_array = np.frombuffer(right_samples, dtype=np.uint8).reshape(height, width, channels)
+    delta = np.abs(
+        left_array[:, :, :comparable_channels].astype(np.int16)
+        - right_array[:, :, :comparable_channels].astype(np.int16)
+    )
+    changed_pixels = (delta.mean(axis=2) >= VISUAL_DIFF_PIXEL_THRESHOLD).astype(np.int32)
+
+    block_rows = (height + block_size - 1) // block_size
+    block_columns = (width + block_size - 1) // block_size
+    changed_blocks = [[False] * block_columns for _ in range(block_rows)]
+    for row in range(block_rows):
+        y_start = row * block_size
+        y_end = min(height, y_start + block_size)
+        for column in range(block_columns):
+            x_start = column * block_size
+            x_end = min(width, x_start + block_size)
+            block_changed_pixels = int(changed_pixels[y_start:y_end, x_start:x_end].sum())
+            changed_blocks[row][column] = block_changed_pixels >= VISUAL_DIFF_MIN_PIXELS_PER_BLOCK
+    return changed_blocks
+
+
+def _build_changed_blocks_with_python(
+    left_samples: bytes,
+    right_samples: bytes,
+    width: int,
+    height: int,
+    channels: int,
+    block_size: int,
+) -> list[list[bool]]:
+    block_rows = (height + block_size - 1) // block_size
+    block_columns = (width + block_size - 1) // block_size
+    changed_blocks = [[False] * block_columns for _ in range(block_rows)]
+    for row in range(block_rows):
+        y_start = row * block_size
+        y_end = min(height, y_start + block_size)
+        for column in range(block_columns):
+            x_start = column * block_size
+            x_end = min(width, x_start + block_size)
+            changed_blocks[row][column] = _block_has_visual_difference(
+                left_samples,
+                right_samples,
+                width,
+                channels,
+                x_start,
+                x_end,
+                y_start,
+                y_end,
+            )
+    return changed_blocks
 
 
 def _merge_changed_blocks_into_rectangles(
@@ -812,65 +900,125 @@ def _merge_changed_blocks_into_rectangles(
     return rectangles
 
 
-def _build_visual_diff_rectangles_for_page(left_page, right_page) -> list[tuple[float, float, float, float]]:
-    left_pixmap = left_page.get_pixmap(dpi=VISUAL_DIFF_RENDER_DPI, alpha=False)
-    right_pixmap = right_page.get_pixmap(dpi=VISUAL_DIFF_RENDER_DPI, alpha=False)
+def _build_visual_diff_rectangles_for_page_data(page_data: VisualDiffPageData) -> list[tuple[float, float, float, float]]:
+    if page_data.full_page_only:
+        return [(0.0, 0.0, page_data.page_width, page_data.page_height)]
     if (
-        left_pixmap.width != right_pixmap.width
-        or left_pixmap.height != right_pixmap.height
-        or left_pixmap.n != right_pixmap.n
+        page_data.left_samples is None
+        or page_data.right_samples is None
+        or page_data.right_width is None
+        or page_data.right_height is None
+        or page_data.right_channels is None
     ):
-        return [_build_full_page_rect(right_page)]
+        return []
 
     block_size = VISUAL_DIFF_BLOCK_SIZE
-    block_rows = (right_pixmap.height + block_size - 1) // block_size
-    block_columns = (right_pixmap.width + block_size - 1) // block_size
-    changed_blocks = [[False] * block_columns for _ in range(block_rows)]
+    if np is not None:
+        changed_blocks = _build_changed_blocks_with_numpy(
+            page_data.left_samples,
+            page_data.right_samples,
+            page_data.right_width,
+            page_data.right_height,
+            page_data.right_channels,
+            block_size,
+        )
+    else:
+        changed_blocks = _build_changed_blocks_with_python(
+            page_data.left_samples,
+            page_data.right_samples,
+            page_data.right_width,
+            page_data.right_height,
+            page_data.right_channels,
+            block_size,
+        )
 
-    for row in range(block_rows):
-        y_start = row * block_size
-        y_end = min(right_pixmap.height, y_start + block_size)
-        for column in range(block_columns):
-            x_start = column * block_size
-            x_end = min(right_pixmap.width, x_start + block_size)
-            changed_blocks[row][column] = _block_has_visual_difference(
-                left_pixmap.samples,
-                right_pixmap.samples,
-                right_pixmap.width,
-                right_pixmap.n,
-                x_start,
-                x_end,
-                y_start,
-                y_end,
-            )
-
-    page_rect = getattr(right_page, "rect", None)
-    page_width = float(page_rect.width) if page_rect is not None else float(right_pixmap.width)
-    page_height = float(page_rect.height) if page_rect is not None else float(right_pixmap.height)
     return _merge_changed_blocks_into_rectangles(
         changed_blocks,
         block_size,
-        page_width,
-        page_height,
-        right_pixmap.width,
-        right_pixmap.height,
+        page_data.page_width,
+        page_data.page_height,
+        page_data.right_width,
+        page_data.right_height,
     )
 
 
-def _collect_pdf_visual_diff_rectangles(file1: Path, file2: Path) -> dict[int, list[tuple[float, float, float, float]]]:
+def _collect_pdf_visual_diff_rectangles(left_document, right_document) -> dict[int, list[tuple[float, float, float, float]]]:
     rectangles_by_page: dict[int, list[tuple[float, float, float, float]]] = {}
-    with fitz.open(file1) as left_document, fitz.open(file2) as right_document:
-        left_pages = list(left_document)
-        right_pages = list(right_document)
+    left_pages = list(left_document)
+    right_pages = list(right_document)
+    page_data_items: list[VisualDiffPageData] = []
 
-        for page_index, right_page in enumerate(right_pages):
-            if page_index >= len(left_pages):
-                rectangles_by_page[page_index] = [_build_full_page_rect(right_page)]
-                continue
+    for page_index, right_page in enumerate(right_pages):
+        page_rect = getattr(right_page, "rect", None)
+        page_width = float(page_rect.width) if page_rect is not None else 0.0
+        page_height = float(page_rect.height) if page_rect is not None else 0.0
+        if page_index >= len(left_pages):
+            page_data_items.append(
+                VisualDiffPageData(
+                    page_index=page_index,
+                    page_width=page_width,
+                    page_height=page_height,
+                    full_page_only=True,
+                )
+            )
+            continue
 
-            rectangles = _build_visual_diff_rectangles_for_page(left_pages[page_index], right_page)
-            if rectangles:
-                rectangles_by_page[page_index] = rectangles
+        left_pixmap = left_pages[page_index].get_pixmap(dpi=VISUAL_DIFF_RENDER_DPI, alpha=False)
+        right_pixmap = right_page.get_pixmap(dpi=VISUAL_DIFF_RENDER_DPI, alpha=False)
+        if page_width == 0.0:
+            page_width = float(right_pixmap.width)
+        if page_height == 0.0:
+            page_height = float(right_pixmap.height)
+
+        if (
+            left_pixmap.width != right_pixmap.width
+            or left_pixmap.height != right_pixmap.height
+            or left_pixmap.n != right_pixmap.n
+        ):
+            page_data_items.append(
+                VisualDiffPageData(
+                    page_index=page_index,
+                    page_width=page_width,
+                    page_height=page_height,
+                    full_page_only=True,
+                )
+            )
+            continue
+
+        page_data_items.append(
+            VisualDiffPageData(
+                page_index=page_index,
+                page_width=page_width,
+                page_height=page_height,
+                left_width=left_pixmap.width,
+                left_height=left_pixmap.height,
+                left_channels=left_pixmap.n,
+                left_samples=left_pixmap.samples,
+                right_width=right_pixmap.width,
+                right_height=right_pixmap.height,
+                right_channels=right_pixmap.n,
+                right_samples=right_pixmap.samples,
+            )
+        )
+
+    if not page_data_items:
+        return rectangles_by_page
+
+    max_workers = min(len(page_data_items), max(1, os.cpu_count() or 1))
+    if max_workers <= 1:
+        results = [(_page_data.page_index, _build_visual_diff_rectangles_for_page_data(_page_data)) for _page_data in page_data_items]
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(
+                executor.map(
+                    lambda payload: (payload.page_index, _build_visual_diff_rectangles_for_page_data(payload)),
+                    page_data_items,
+                )
+            )
+
+    for page_index, rectangles in sorted(results, key=lambda item: item[0]):
+        if rectangles:
+            rectangles_by_page[page_index] = rectangles
 
     return rectangles_by_page
 
@@ -885,29 +1033,38 @@ def _style_visual_diff_annotation(annotation) -> None:
 
 
 def _write_layout_preserving_highlight_pdf(file1: Path, file2: Path, output_path: Path) -> Path:
-    file2_lines = _extract_pdf_visual_lines(file2)
-    lines2_for_diff = [normalized for _, _, normalized in file2_lines]
-    visual_diff_rectangles: dict[int, list[tuple[float, float, float, float]]] = {}
-    if file1.suffix.lower() == ".pdf":
-        lines1_for_diff = [normalized for _, _, normalized in _extract_pdf_visual_lines(file1)]
-        visual_diff_rectangles = _collect_pdf_visual_diff_rectangles(file1, file2)
-    else:
-        lines1_for_diff = read_text_lines(file1)
-    changed_flags = _build_changed_line_flags(lines1_for_diff, lines2_for_diff)
-
     with fitz.open(file2) as document:
+        file2_lines = _extract_pdf_visual_lines_from_document(document)
+        lines2_for_diff = [normalized for _, _, normalized in file2_lines]
+        visual_diff_rectangles: dict[int, list[tuple[float, float, float, float]]] = {}
+        if file1.suffix.lower() == ".pdf":
+            with fitz.open(file1) as left_document:
+                lines1_for_diff = [normalized for _, _, normalized in _extract_pdf_visual_lines_from_document(left_document)]
+                visual_diff_rectangles = _collect_pdf_visual_diff_rectangles(left_document, document)
+        else:
+            lines1_for_diff = read_text_lines(file1)
+        changed_flags = _build_changed_line_flags(lines1_for_diff, lines2_for_diff)
+
+        text_lines_by_page: dict[int, set[str]] = defaultdict(set)
+        for page_index, raw_line, _normalized in file2_lines:
+            text_lines_by_page[page_index].add(raw_line)
+        search_cache: dict[tuple[int, str], list] = {}
+        for page_index, page_lines in text_lines_by_page.items():
+            page = document[page_index]
+            for line in page_lines:
+                search_cache[(page_index, line)] = page.search_for(line)
+
         used_occurrences: dict[tuple[int, str], int] = {}
         for (page_index, raw_line, _normalized), is_changed in zip(file2_lines, changed_flags):
             if not is_changed:
                 continue
-            page = document[page_index]
-            matches = page.search_for(raw_line)
+            matches = search_cache.get((page_index, raw_line), [])
             if not matches:
                 continue
             key = (page_index, raw_line)
             occurrence_index = used_occurrences.get(key, 0)
             rect = matches[occurrence_index] if occurrence_index < len(matches) else matches[-1]
-            page.add_highlight_annot(rect)
+            document[page_index].add_highlight_annot(rect)
             used_occurrences[key] = occurrence_index + 1
         for page_index, rectangles in visual_diff_rectangles.items():
             if not rectangles:
