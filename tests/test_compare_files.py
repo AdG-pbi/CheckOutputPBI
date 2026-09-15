@@ -247,13 +247,13 @@ class CompareFilesTests(unittest.TestCase):
                     self._samples = samples
                     self.highlights = []
                     self.rectangles = []
-                    self.rect = type("Rect", (), {"width": 40, "height": 40})()
+                    self.rect = type("Rect", (), {"width": 80, "height": 80})()
 
                 def get_text(self, _mode):
                     return self._text
 
                 def get_pixmap(self, **_kwargs):
-                    return type("Pixmap", (), {"width": 4, "height": 4, "n": 1, "samples": self._samples})()
+                    return type("Pixmap", (), {"width": 8, "height": 8, "n": 1, "samples": self._samples})()
 
                 def search_for(self, _text):
                     return []
@@ -294,27 +294,11 @@ class CompareFilesTests(unittest.TestCase):
                 def save(self, destination):
                     Path(destination).write_bytes(self.source_path.read_bytes())
 
-            left_page = FakePage("Grafico invariato", bytes([255] * 16))
-            right_samples = bytes(
-                [
-                    255,
-                    255,
-                    255,
-                    255,
-                    255,
-                    255,
-                    255,
-                    255,
-                    255,
-                    255,
-                    0,
-                    0,
-                    255,
-                    255,
-                    0,
-                    0,
-                ]
-            )
+            left_page = FakePage("Grafico invariato", bytes([255] * 64))
+            right_sample_values = [255] * 64
+            for index in (54, 55, 62, 63):
+                right_sample_values[index] = 0
+            right_samples = bytes(right_sample_values)
             right_page = FakePage("Grafico invariato", right_samples)
             left_document = FakeDocument([left_page], left)
             right_document = FakeDocument([right_page], right)
@@ -335,7 +319,7 @@ class CompareFilesTests(unittest.TestCase):
             self.assertTrue(output_pdf.exists())
             self.assertEqual(output_pdf.read_bytes(), right.read_bytes())
             self.assertEqual(right_page.highlights, [])
-            self.assertEqual(right_page.rectangles, [(20.0, 20.0, 40.0, 40.0)])
+            self.assertEqual(right_page.rectangles, [(40.0, 40.0, 80.0, 80.0)])
 
     def test_compare_pdf_files_exposes_page_and_line_locations(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
