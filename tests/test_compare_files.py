@@ -731,6 +731,48 @@ class CompareFilesTests(unittest.TestCase):
                 result.differences,
             )
 
+    def test_compare_pdf_table_files_with_key_keeps_same_section_across_pages(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.pdf"
+            right = tmp_path / "right.pdf"
+            left.write_bytes(b"%PDF-1.7")
+            right.write_bytes(b"%PDF-1.7")
+
+            class FakePage:
+                def __init__(self, text):
+                    self._text = text
+
+                def extract_text(self, *args, **kwargs):
+                    return self._text
+
+            class FakeReader:
+                def __init__(self, pages):
+                    self.pages = pages
+
+            with patch(
+                "compare_files.PdfReader",
+                side_effect=[
+                    FakeReader([FakePage("Tabella Clienti\nID | Nome\n1 | Alice"), FakePage("2 | Bob")]),
+                    FakeReader([FakePage("Tabella Clienti\nID | Nome\n1 | Alice"), FakePage("2 | Bobby")]),
+                ],
+            ):
+                result = auto_compare(left, right, "1")
+
+            self.assertEqual(result.mode, "tabular")
+            self.assertIsNone(result.sections)
+            self.assertEqual(result.summary["changed"], 1)
+            self.assertIn(
+                {
+                    "status": "CHANGED",
+                    "record_key": "2",
+                    "column": "Nome",
+                    "file1": "Bob",
+                    "file2": "Bobby",
+                },
+                result.differences,
+            )
+
     def test_integer_float_equivalence_in_xlsx(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

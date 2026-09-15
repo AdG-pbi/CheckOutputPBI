@@ -433,11 +433,10 @@ def read_pdf_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
     reader = PdfReader(str(path))
     sections: dict[str, list[list[str]]] = {}
     table_index = 0
+    active_section_name: str | None = None
+    previous_plain_line = ""
     for page in reader.pages:
         text = _extract_pdf_page_text(page)
-
-        active_section_name: str | None = None
-        previous_plain_line = ""
         for line in text.splitlines():
             stripped_line = line.strip()
             if not stripped_line:
