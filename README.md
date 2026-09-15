@@ -32,6 +32,14 @@ python compare_files.py prima.csv seconda.csv -k 1+5 -o differenze.xlsx
 
 Nei file Excel (`.xlsx`/`.xlsm`) vengono considerati anche workbook con più fogli: il confronto viene eseguito per nome foglio.
 
+Per workbook multi-sheet puoi anche ripetere `--key` e associare una chiave a uno sheet specifico indicando il suo numero 1-based:
+
+```bash
+python compare_files.py prima.xlsx seconda.xlsx --key 1:1 --key 2:2+4 -o differenze.xlsx
+```
+
+Se passi una chiave senza prefisso (`--key 1+5`), quella viene usata come default per tutti gli sheet che non hanno una chiave dedicata.
+
 ## Output
 
 Il file Excel prodotto contiene:

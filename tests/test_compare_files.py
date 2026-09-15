@@ -9,9 +9,11 @@ from docx.enum.text import WD_BREAK
 from openpyxl import Workbook, load_workbook
 
 from compare_files import (
+    ComparisonError,
     ComparisonResult,
     auto_compare,
     build_file2_highlight_lines,
+    parse_key_arguments,
     parse_key_spec,
     read_xlsx_rows,
     write_excel_report,
@@ -23,6 +25,12 @@ class CompareFilesTests(unittest.TestCase):
     def test_parse_key_spec(self):
         self.assertEqual(parse_key_spec("1+5"), (0, 4))
         self.assertEqual(parse_key_spec(None), None)
+
+    def test_parse_key_arguments_with_sheet_numbers(self):
+        config = parse_key_arguments(["1", "2:3+4"])
+
+        self.assertEqual(config.default_key_indexes, (0,))
+        self.assertEqual(config.sheet_key_indexes, {2: (2, 3)})
 
     def test_compare_csv_with_key_and_excel_report(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -725,6 +733,73 @@ class CompareFilesTests(unittest.TestCase):
             self.assertEqual(clienti_rows[0], ("Status", "Record Key", "Column", "File 1", "File 2"))
             self.assertIn(("CHANGED", "1", "name", "Alice", "Alicia"), clienti_rows)
             self.assertIn(("ADDED", "200", "total", None, "10"), ordini_rows)
+
+    def test_compare_multi_sheet_xlsx_with_per_sheet_keys(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.xlsx"
+            right = tmp_path / "right.xlsx"
+
+            wb1 = Workbook()
+            ws1 = wb1.active
+            ws1.title = "Clienti"
+            ws1.append(["id", "name"])
+            ws1.append([1, "Alice"])
+
+            ws2 = wb1.create_sheet("Ordini")
+            ws2.append(["date", "order_id", "total"])
+            ws2.append(["2024-01-01", "A001", 50])
+            ws2.append(["2024-01-01", "B002", 20])
+            wb1.save(left)
+
+            wb2 = Workbook()
+            ws1_b = wb2.active
+            ws1_b.title = "Clienti"
+            ws1_b.append(["id", "name"])
+            ws1_b.append([1, "Alicia"])
+
+            ws2_b = wb2.create_sheet("Ordini")
+            ws2_b.append(["date", "order_id", "total"])
+            ws2_b.append(["2024-02-01", "A001", 60])
+            ws2_b.append(["2024-01-01", "B002", 20])
+            wb2.save(right)
+
+            result = auto_compare(left, right, ["1:1", "2:2"])
+
+            self.assertEqual(result.summary["changed"], 2)
+            self.assertEqual(result.summary["added"], 0)
+            self.assertEqual(result.summary["removed"], 0)
+            self.assertEqual(result.summary["key"], "sheet 1: 1; sheet 2: 2")
+            self.assertIn(
+                {
+                    "status": "CHANGED",
+                    "record_key": "A001",
+                    "column": "total",
+                    "file1": "50",
+                    "file2": "60",
+                    "sheet": "Ordini",
+                },
+                result.differences,
+            )
+
+    def test_compare_multi_sheet_xlsx_rejects_unknown_sheet_key(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            left = tmp_path / "left.xlsx"
+            right = tmp_path / "right.xlsx"
+
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Clienti"
+            sheet.append(["id", "name"])
+            sheet.append([1, "Alice"])
+            workbook.save(left)
+            workbook.save(right)
+
+            with self.assertRaises(ComparisonError) as exc:
+                auto_compare(left, right, ["2:1"])
+
+            self.assertIn("sheet non presenti", str(exc.exception))
 
     def test_multi_sheet_report_includes_tabs_without_differences(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
