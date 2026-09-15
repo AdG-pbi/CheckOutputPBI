@@ -597,6 +597,19 @@ def split_header(rows1: list[list[str]], rows2: list[list[str]]) -> tuple[list[s
     return header, rows1, rows2
 
 
+def normalize_header_width(
+    header: Sequence[str], data1: Sequence[Sequence[str]], data2: Sequence[Sequence[str]]
+) -> list[str]:
+    width = max(
+        len(header),
+        max((len(row) for row in data1), default=0),
+        max((len(row) for row in data2), default=0),
+    )
+    if width == 0:
+        return []
+    return [header[index] if index < len(header) and header[index] else f"Colonna {index + 1}" for index in range(width)]
+
+
 def pad_row(row: Sequence[str], width: int) -> list[str]:
     return list(row) + [""] * (width - len(row))
 
@@ -652,6 +665,7 @@ def compare_tabular_files(file1: Path, file2: Path, key_config: KeyConfig) -> Co
         else:
             header, data1, data2 = split_header(rows1, rows2)
 
+        header = normalize_header_width(header, data1, data2)
         width = len(header)
         mapping1 = rows_to_mapping(data1, key_indexes, width)
         mapping2 = rows_to_mapping(data2, key_indexes, width)
