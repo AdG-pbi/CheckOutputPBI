@@ -16,6 +16,8 @@ Strumento CLI per confrontare due file e generare un report Excel con le differe
 python -m pip install -r requirements.txt
 ```
 
+Per migliorare le prestazioni del confronto visivo PDF, il progetto usa anche `numpy` (installato tramite `requirements.txt`).
+
 ## Utilizzo
 
 ```bash
@@ -52,3 +54,13 @@ Per i `.pdf`, il parser prova anche un'estrazione in modalità "layout" per pres
 Se due `.pdf` hanno differenze visive molto piccole (per esempio grafici, immagini o testo vettoriale che non viene intercettato bene dall'estrazione testuale), il PDF evidenziato aggiunge anche riquadri rossi nelle aree della pagina che risultano cambiate.
 
 Se il dettaglio supera il limite di righe supportato da Excel, il report viene salvato automaticamente in formato `.csv` nello stesso percorso richiesto, sostituendo l'estensione del file di output.
+
+## Benchmark prestazioni PDF
+
+Per misurare rapidamente il tempo di confronto PDF (small/medium/large e scenario visual-only):
+
+```bash
+python benchmarks/benchmark_pdf_compare.py --iterations 3
+```
+
+Lo script stampa tempi medi separati per confronto (`auto_compare`) e generazione PDF evidenziato.
