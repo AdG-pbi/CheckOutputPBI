@@ -4,7 +4,7 @@ Strumento CLI per confrontare due file e generare un report Excel con le differe
 
 ## Formati supportati
 
-- tabellari: `csv`, `xlsx`, `xlsm`
+- tabellari: `csv`, `xlsx`, `xlsm` (e `.pdf` quando usi `--key` e viene riconosciuta una tabella)
 - testuali/documentali: `txt`, `pdf`, `docx`
 - altri file testuali leggibili come UTF-8
 

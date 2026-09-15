@@ -381,7 +381,7 @@ def _extract_pdf_page_text(page, *, fallback_to_plain_text: bool = True) -> str:
     try:
         text = page.extract_text(extraction_mode="layout") or ""
     except TypeError:
-        text = ""
+        return page.extract_text() or ""
     if text or not fallback_to_plain_text:
         return text
     return page.extract_text() or ""
