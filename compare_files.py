@@ -434,7 +434,7 @@ def read_pdf_tabular_sections(path: Path) -> dict[str, list[list[str]]]:
     sections: dict[str, list[list[str]]] = {}
     table_index = 0
     for page in reader.pages:
-        text = _extract_pdf_page_text(page, fallback_to_plain_text=False)
+        text = _extract_pdf_page_text(page)
 
         active_section_name: str | None = None
         previous_plain_line = ""
