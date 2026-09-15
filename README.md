@@ -49,4 +49,6 @@ Per `file2` in formato `.pdf`, il PDF evidenziato mantiene lo stesso layout dell
 
 Per i `.pdf`, il parser prova anche un'estrazione in modalità "layout" per preservare meglio l'allineamento visivo del contenuto: questo aiuta a riconoscere correttamente tabelle che, in estrazione testuale semplice, verrebbero appiattite come testo normale.
 
+Se due `.pdf` hanno differenze visive molto piccole (per esempio grafici, immagini o testo vettoriale che non viene intercettato bene dall'estrazione testuale), il PDF evidenziato aggiunge anche riquadri rossi nelle aree della pagina che risultano cambiate.
+
 Se il dettaglio supera il limite di righe supportato da Excel, il report viene salvato automaticamente in formato `.csv` nello stesso percorso richiesto, sostituendo l'estensione del file di output.
